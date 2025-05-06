@@ -147,7 +147,7 @@ if (getLocalTime(&timeInfo)) {
   ledcSetup(ledChannel, 40000, 8);  // 40kHz PWM
   ledcAttachPin(ledPin, ledChannel);
 
-  Serial.println("✅ 初始化完成，進入 loop()");
+  Serial.println("✅ 初始化完成，開始發射計時波訊號");
 }
 
 void loop() {
