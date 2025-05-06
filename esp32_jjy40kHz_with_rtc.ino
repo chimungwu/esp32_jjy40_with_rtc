@@ -11,14 +11,9 @@
 //   - Expanded sg[] buffer to prevent overflow and added safe buffer operations
 //   - Enhanced runtime logs and error messages for easier debugging
 //
-// 🔧 Ready for Expansion:
-//   - Optional: 1602 LCD display (shows current time and sync status)
-//   - Optional: Button input (short press to start TX, long press to cancel)
-//
 // 🧷 Hardware Wiring:
 //   - Antenna (loop type): GPIO26 → 220Ω → Wire Loop → GND
 //   - RTC DS1302: IO=GPIO13, SCLK=GPIO14, RST=GPIO15
-//   - (Optional) Button input: e.g., GPIO25
 
 #include <Arduino.h>
 #include <driver/ledc.h>
