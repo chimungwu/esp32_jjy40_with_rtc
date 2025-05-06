@@ -30,21 +30,23 @@
 ThreeWire myWire(13, 14, 15); // IO, SCLK, RST
 RtcDS1302<ThreeWire> rtc(myWire);
 
-// hardware
-const int ledChannel = 0; // 使用するLEDチャンネル ---> JJT antena 
-const int ledPin =26;     // PWM出力するGPIOピン ANT G-5
-const int wifiStatusLED = 2;  // 使用 GPIO2 當作狀態燈
+// 硬體設定
+const int ledChannel = 0;          // LEDC PWM 通道 0，用於產生 40kHz 輸出至 JJY 天線
+const int ledPin = 26;             // 輸出 JJY 信號的 GPIO 腳位，接至天線（建議串接 220Ω）
+const int wifiStatusLED = 2;       // WiFi 狀態指示燈，使用內建的 GPIO2，成功連線後點亮
 
 char P0,P1,P2,P3,P4,P5;
 const char M = P0 = P1 = P2 = P3 = P4 = P5 = -1;
 char PA1,PA2, SU1,  LS1,LS2;
 
 char  sg[62];
-///char  min40, min20, min10, min8, min4, min2, min1;
-///char  hr20, hr10, hr8, hr4, hr2, hr1;
-///char  dy200, dy100, dy80, dy40, dy20, dy10, dy8, dy4, dy2, dy1;
-///char  yr80, yr40, yr20, yr10, yr8, yr4, yr2, yr1;
-///char  wd4, wd2, wd1;
+// sg[] 為 60 秒 JJY 時碼資料陣列（sg[0]~sg[59]），另含 sg[60], sg[61] 安全邊界
+// 下列為可能對應的時間資訊位元（僅供備註參考）
+// 分鐘欄位：min40, min20, min10, min8, min4, min2, min1
+// 小時欄位：hr20, hr10, hr8, hr4, hr2, hr1
+// 日期欄位：dy200, dy100, dy80, dy40, dy20, dy10, dy8, dy4, dy2, dy1
+// 年份欄位：yr80, yr40, yr20, yr10, yr8, yr4, yr2, yr1
+// 星期欄位：wd4, wd2, wd1
 
 const char* ssid     = "SSID";  // 請填入WIFI名稱
 const char* password = "PASSWORD";  // 請填入WIFI密碼
@@ -229,18 +231,21 @@ void loop() {
 
 }
 
-///構造体 tm はtime.h
-///struct tm {
-///  int tm_sec;      /// 秒 [0-61] 最大2秒までのうるう秒を考慮
-///  int tm_min;      /// 分 [0-59]
-///  int tm_hour;     /// 時 [0-23]
-///  int tm_mday;     /// 日 [1-31]
-///  int tm_mon;      /// 月 [0-11] 0から始まることに注意
-///  int tm_year;     /// 年 [1900からの経過年数]
-///  int tm_wday;     /// 曜日 [0:日 1:月 ... 6:土]
-///  int tm_yday;     /// 年内の通し日数 [0-365]
-///  int tm_isdst;    /// 夏時間フラグ　[夏時間を採用しているときに正、採用していないときに 0、この情報が得られないときに負]
-///};
+// struct tm 是 time.h 提供的標準時間結構，用於儲存與操作完整的日期與時間資訊：
+// 下面是其各欄位的意義說明：
+//
+// struct tm {
+//   int tm_sec;   // 秒數，範圍 0–61（包含閏秒，因此可能出現 60 或 61）
+//   int tm_min;   // 分鐘數，範圍 0–59
+//   int tm_hour;  // 小時數，範圍 0–23（24 小時制）
+//   int tm_mday;  // 月中的日期，範圍 1–31
+//   int tm_mon;   // 月份，範圍 0–11（0 表示一月）
+//   int tm_year;  // 自 1900 年起的年數（例如 2025 年為 125）
+//   int tm_wday;  // 星期幾（0 表示星期日，1 表示星期一，以此類推）
+//   int tm_yday;  // 年內的天數，從 0 開始（一月一日為 0）
+//   int tm_isdst; // 夏令時間旗標（正值表示夏令時間中，0 表示非夏令時間，負值表示未知）
+// };
+
 
 
 void set_year(int n){
