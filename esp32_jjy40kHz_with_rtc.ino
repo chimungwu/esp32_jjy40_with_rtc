@@ -41,12 +41,6 @@ char PA1,PA2, SU1,  LS1,LS2;
 
 char  sg[62];
 // sg[] 為 60 秒 JJY 時碼資料陣列（sg[0]~sg[59]），另含 sg[60], sg[61] 安全邊界
-// 下列為可能對應的時間資訊位元（僅供備註參考）
-// 分鐘欄位：min40, min20, min10, min8, min4, min2, min1
-// 小時欄位：hr20, hr10, hr8, hr4, hr2, hr1
-// 日期欄位：dy200, dy100, dy80, dy40, dy20, dy10, dy8, dy4, dy2, dy1
-// 年份欄位：yr80, yr40, yr20, yr10, yr8, yr4, yr2, yr1
-// 星期欄位：wd4, wd2, wd1
 
 const char* ssid     = "SSID";  // 請填入WIFI名稱
 const char* password = "PASSWORD";  // 請填入WIFI密碼
@@ -231,23 +225,6 @@ void loop() {
 
 }
 
-// struct tm 是 time.h 提供的標準時間結構，用於儲存與操作完整的日期與時間資訊：
-// 下面是其各欄位的意義說明：
-//
-// struct tm {
-//   int tm_sec;   // 秒數，範圍 0–61（包含閏秒，因此可能出現 60 或 61）
-//   int tm_min;   // 分鐘數，範圍 0–59
-//   int tm_hour;  // 小時數，範圍 0–23（24 小時制）
-//   int tm_mday;  // 月中的日期，範圍 1–31
-//   int tm_mon;   // 月份，範圍 0–11（0 表示一月）
-//   int tm_year;  // 自 1900 年起的年數（例如 2025 年為 125）
-//   int tm_wday;  // 星期幾（0 表示星期日，1 表示星期一，以此類推）
-//   int tm_yday;  // 年內的天數，從 0 開始（一月一日為 0）
-//   int tm_isdst; // 夏令時間旗標（正值表示夏令時間中，0 表示非夏令時間，負值表示未知）
-// };
-
-
-
 void set_year(int n){
   
   int m = dec2BCD(n);
@@ -322,7 +299,6 @@ void set_min(int n){
   sg[37] = PA2;
 }
 
-
 void set_fix(){
   sg[0] = sg[9] = sg[19] = sg[29] = sg[39] = sg[49] = sg[59] = M;
   sg[4] = sg[10] = sg[11] = sg[14] = sg[20] = sg[21] = sg[24] = sg[34] = sg[35] = sg[55] = sg[56] = sg[57] = sg[58] = 0;
@@ -346,7 +322,6 @@ int dec2BCD(int decimal) {
     
     ///printf("BCD: %X\n", bcd);
 }
-
 
 void mark() {   // 0.2sec
   ledcWrite(ledChannel, 127);
