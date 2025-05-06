@@ -9,7 +9,7 @@ This project simulates a JJY (Japanese Standard Time) 40kHz radio wave transmitt
 ## 🔧 Features
 
 - 🛰️ **WiFi + NTP Time Synchronization**  
-  On startup, the ESP32 tries up to 10 times to connect to WiFi and synchronize time via NTP.
+  On startup, the ESP32 tries up to 30s to connect to WiFi and synchronize time via NTP.
 
 - 🕒 **RTC Fallback with DS1302**  
   If NTP sync fails, the system falls back to the onboard DS1302 RTC to provide time continuity.
