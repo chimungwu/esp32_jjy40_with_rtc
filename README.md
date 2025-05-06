@@ -37,19 +37,11 @@ This project simulates a JJY (Japanese Standard Time) 40kHz radio wave transmitt
 
 ---
 
-## 📂 File Structure
-
-esp32-jjy-rtc/
-├── esp32_jjy_rtc.ino # Main source file (modified from original ver.0.10)
-├── README.md # This documentation
-
-
----
-
 ## 🧑‍💻 Authors
 
-- **Original version** by Nash (Shuji009), 2024/05/16  
-- **Modified and extended** by **chimung**
+- **Original version** by Nash (Shuji009), 2024/05/16
+- https://github.com/shuji009/ESP32_jjy_40kHz
+- **Modified and extended** by **chimungwu**, 2025/05/06
 
 ---
 
