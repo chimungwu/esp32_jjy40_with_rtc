@@ -42,7 +42,7 @@ const char* password = "PASSWORD";  // 請填入WIFI密碼
 
 void setup() {
   pinMode(wifiStatusLED, OUTPUT);
-digitalWrite(wifiStatusLED, LOW);  // 預設熄滅
+  digitalWrite(wifiStatusLED, LOW);  // 預設熄滅
   Serial.begin(115200);
   delay(100);
   Serial.println("🟢 setup 開始");
@@ -83,22 +83,33 @@ if (WiFi.status() != WL_CONNECTED) {
 
     struct tm timeInfo;
     for (int i = 0; i < 3; i++) {
-      if (getLocalTime(&timeInfo)) {
-        if (timeInfo.tm_year >= 120) {
-          RtcDateTime ntpTime(
-              timeInfo.tm_year + 1900,
-              timeInfo.tm_mon + 1,
-              timeInfo.tm_mday,
-              timeInfo.tm_hour,
-              timeInfo.tm_min,
-              timeInfo.tm_sec);
-          rtc.SetDateTime(ntpTime);
-          digitalWrite(wifiStatusLED, HIGH);  // 成功取得 NTP，亮燈
-          Serial.printf("📡 已取得 NTP 時間並寫入 RTC：%04d/%02d/%02d %02d:%02d:%02d\n",
-                        ntpTime.Year(), ntpTime.Month(), ntpTime.Day(),
-                        ntpTime.Hour(), ntpTime.Minute(), ntpTime.Second());
-          ntpSuccess = true;
-          break;
+if (getLocalTime(&timeInfo)) {
+  if (timeInfo.tm_year >= 120) {
+    // 等到下一秒邊界
+    time_t rawtime;
+    time(&rawtime);  // 取得當前時間（秒）
+    while (time(nullptr) == rawtime) {
+      delay(1);  // 等到進入下一秒
+    }
+
+    // 再取得一次正確對齊的 NTP 時間
+    getLocalTime(&timeInfo);
+
+    RtcDateTime ntpTime(
+        timeInfo.tm_year + 1900,
+        timeInfo.tm_mon + 1,
+        timeInfo.tm_mday,
+        timeInfo.tm_hour,
+        timeInfo.tm_min,
+        timeInfo.tm_sec);
+
+    rtc.SetDateTime(ntpTime);
+    digitalWrite(wifiStatusLED, HIGH); //成功取得NTP亮燈
+    Serial.printf("📡 精準對齊整秒後寫入 RTC：%04d/%02d/%02d %02d:%02d:%02d\n",
+                  ntpTime.Year(), ntpTime.Month(), ntpTime.Day(),
+                  ntpTime.Hour(), ntpTime.Minute(), ntpTime.Second());
+    ntpSuccess = true;
+    break;
         } else {
           Serial.println("⚠️ NTP 時間無效（年份 < 2020）");
         }
