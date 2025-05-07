@@ -25,6 +25,9 @@
 ThreeWire myWire(13, 14, 15); // IO, SCLK, RST
 RtcDS1302<ThreeWire> rtc(myWire);
 
+// UTC時區設定(日本+9，台灣+8)
+const long timeZoneOffset = 9 * 3600L;  
+
 // 硬體設定
 const int ledChannel = 0;          // LEDC PWM 通道 0，用於產生 40kHz 輸出至 JJY 天線
 const int ledPin = 26;             // 輸出 JJY 信號的 GPIO 腳位，接至天線（建議串接 220Ω）
@@ -41,6 +44,7 @@ const char* ssid     = "SSID";  // 請填入WIFI名稱
 const char* password = "PASSWORD";  // 請填入WIFI密碼
 uint64_t ntpSyncedMicros = 0;
 time_t ntpSyncedTime = 0;
+
 void delayUntilAlignedRTCWrite() {
   time_t prevSec;
   time(&prevSec);  // 取得目前整數秒
@@ -97,7 +101,7 @@ void setup() {
   bool ntpSuccess = false;
   if (WiFi.status() == WL_CONNECTED) {
     Serial.println("✅ WiFi 已連線");
-    configTime(9 * 3600L, 0, "time.stdtime.gov.tw", "time.google.com", "pool.ntp.org");
+    configTime(timeZoneOffset, 0, "time.stdtime.gov.tw", "time.google.com", "pool.ntp.org");
 
     struct tm timeInfo;
     for (int i = 0; i < 3; i++) {
@@ -157,7 +161,7 @@ if (!ntpSuccess) {
             now.Year(), now.Month(), now.Day(),
             now.Hour(), now.Minute(), now.Second());
     Serial.println(buf);
-
+  
     if (now.Year() < 2020) {
       Serial.println("❗ RTC 時間異常（小於 2020），請確認 RTC 電池或是否已初始化");
     }
