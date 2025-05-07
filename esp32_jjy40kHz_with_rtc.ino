@@ -39,6 +39,30 @@ char  sg[62];
 
 const char* ssid     = "SSID";  // 請填入WIFI名稱
 const char* password = "PASSWORD";  // 請填入WIFI密碼
+uint64_t ntpSyncedMicros = 0;
+time_t ntpSyncedTime = 0;
+void delayUntilAlignedRTCWrite() {
+  time_t prevSec;
+  time(&prevSec);  // 取得目前整數秒
+
+  // 等到秒數跳變（跳入下一秒）
+  while (time(nullptr) == prevSec) {
+    delayMicroseconds(100);
+  }
+
+  // 記錄剛跳秒那一刻的微秒時間
+  uint64_t mark_us = esp_timer_get_time();
+
+  // 再次取得時間資訊
+  struct tm tmp;
+  getLocalTime(&tmp);  // 保證對齊整秒
+
+  // 精準補足到 300ms 再繼續
+  const uint32_t targetOffsetUs = 300000;
+  while ((esp_timer_get_time() - mark_us) < targetOffsetUs) {
+    delayMicroseconds(100);
+  }
+}
 
 void setup() {
   pinMode(wifiStatusLED, OUTPUT);
@@ -49,8 +73,6 @@ void setup() {
 
   // 初始化 RTC
   rtc.Begin();
-
-  // 確保 RTC 非寫入保護狀態，且正在走時
   if (rtc.GetIsWriteProtected()) {
     rtc.SetIsWriteProtected(false);
     Serial.println("🔓 RTC 寫入保護已解除");
@@ -62,9 +84,6 @@ void setup() {
 
   // 嘗試透過 WiFi 同步 NTP
   WiFi.mode(WIFI_STA);
-if (WiFi.status() != WL_CONNECTED) {
-  Serial.println("⚠️ WiFi 連線失敗，跳過 NTP 同步");
-}
   WiFi.begin(ssid, password);
   Serial.print("🌐 WiFi 連線中");
 
@@ -78,38 +97,45 @@ if (WiFi.status() != WL_CONNECTED) {
   bool ntpSuccess = false;
   if (WiFi.status() == WL_CONNECTED) {
     Serial.println("✅ WiFi 已連線");
-  //使用台灣伺服器標準時間，預設日本時區UTF-9
     configTime(9 * 3600L, 0, "time.stdtime.gov.tw", "time.google.com", "pool.ntp.org");
 
     struct tm timeInfo;
     for (int i = 0; i < 3; i++) {
-if (getLocalTime(&timeInfo)) {
-  if (timeInfo.tm_year >= 120) {
-    // 等到下一秒邊界
-    time_t rawtime;
-    time(&rawtime);  // 取得當前時間（秒）
-    while (time(nullptr) == rawtime) {
-      delay(1);  // 等到進入下一秒
-    }
+      if (getLocalTime(&timeInfo)) {
+        if (timeInfo.tm_year >= 120) {
+          // 等待下一秒交界
+          time_t rawtime;
+          time(&rawtime);
+          while (time(nullptr) == rawtime) {
+            delay(1);
+          }
 
-    // 再取得一次正確對齊的 NTP 時間
-    getLocalTime(&timeInfo);
+          delayUntilAlignedRTCWrite();  // 🎯 自動延遲補償
 
-    RtcDateTime ntpTime(
-        timeInfo.tm_year + 1900,
-        timeInfo.tm_mon + 1,
-        timeInfo.tm_mday,
-        timeInfo.tm_hour,
-        timeInfo.tm_min,
-        timeInfo.tm_sec);
+          getLocalTime(&timeInfo);
 
-    rtc.SetDateTime(ntpTime);
-    digitalWrite(wifiStatusLED, HIGH); //成功取得NTP亮燈
-    Serial.printf("📡 精準對齊整秒後寫入 RTC：%04d/%02d/%02d %02d:%02d:%02d\n",
-                  ntpTime.Year(), ntpTime.Month(), ntpTime.Day(),
-                  ntpTime.Hour(), ntpTime.Minute(), ntpTime.Second());
-    ntpSuccess = true;
-    break;
+          // ⏱ 記錄 esp_timer 與 NTP 對應秒基準
+          time_t ntpEpoch;
+          time(&ntpEpoch);
+          ntpSyncedMicros = esp_timer_get_time();
+          ntpSyncedTime = ntpEpoch;
+
+          RtcDateTime ntpTime(
+              timeInfo.tm_year + 1900,
+              timeInfo.tm_mon + 1,
+              timeInfo.tm_mday,
+              timeInfo.tm_hour,
+              timeInfo.tm_min,
+              timeInfo.tm_sec);
+          rtc.SetDateTime(ntpTime);
+
+          digitalWrite(wifiStatusLED, HIGH);
+          Serial.printf("📡 精準對齊整秒後寫入 RTC：%04d/%02d/%02d %02d:%02d:%02d\n",
+                        ntpTime.Year(), ntpTime.Month(), ntpTime.Day(),
+                        ntpTime.Hour(), ntpTime.Minute(), ntpTime.Second());
+
+          ntpSuccess = true;
+          break;
         } else {
           Serial.println("⚠️ NTP 時間無效（年份 < 2020）");
         }
@@ -122,6 +148,7 @@ if (getLocalTime(&timeInfo)) {
     Serial.println("❌ 無法連上 WiFi");
   }
 
+  // 📦 如果 NTP 失敗，改用 RTC
   if (!ntpSuccess) {
     if (rtc.IsDateTimeValid()) {
       Serial.println("⚠️ 使用 RTC 內部時間：");
@@ -132,66 +159,49 @@ if (getLocalTime(&timeInfo)) {
               now.Hour(), now.Minute(), now.Second());
       Serial.println(buf);
 
-       // 新增這段判斷
-    if (now.Year() < 2020) {
-      Serial.println("❗ RTC 時間異常（小於 2020），請確認 RTC 電池或是否已初始化");
-    }
-    
+      if (now.Year() < 2020) {
+        Serial.println("❗ RTC 時間異常（小於 2020），請確認 RTC 電池或是否已初始化");
+      }
     } else {
       Serial.println("🛑 RTC 時間無效，無法取得正確時間！");
     }
   }
 
   // 初始化發波器
-  set_fix();  // 訊號標記設置
-  ledcSetup(ledChannel, 40000, 8);  // 40kHz PWM
+  set_fix();
+  ledcSetup(ledChannel, 40000, 8);
   ledcAttachPin(ledPin, ledChannel);
 
   Serial.println("✅ 初始化完成，開始發射計時波訊號");
 }
 
+
 void loop() {
-
-  if (!rtc.IsDateTimeValid()) {
-  Serial.println("🛑 RTC 時間無效，跳過此次發波");
-  delay(1000);
-  return;
-}
-
-  // 🕛 等待整秒交界：避免 sg[0] 發送不是在秒 0.000
-RtcDateTime prev = rtc.GetDateTime();
-while (true) {
-  RtcDateTime curr = rtc.GetDateTime();
-  if (curr.Second() != prev.Second() && curr.Second() != 0) break;
-  delay(1);
-}
-
-  // 🎯 抓取秒 0 時的時間，作為發波基準
-  RtcDateTime now = rtc.GetDateTime();
-  if (!now.IsValid()) {
-    Serial.println("⚠️ RTC 時間無效，請檢查模組或重新初始化");
-    delay(2000);
-    return;
+  // 🕛 等待進入真正整秒（微秒 < 1000 表示接近 0 秒）
+  while (true) {
+    uint64_t nowMicros = esp_timer_get_time();
+    uint32_t offset = (nowMicros - ntpSyncedMicros) % 1000000UL;
+    if (offset < 1000) break;  // 對齊秒起點 ±1ms
+    delayMicroseconds(100);   // 精細等待
   }
 
-  // 顯示當前時間
+  // 🎯 推算目前時間（second + microsecond）
+  uint64_t nowMicros = esp_timer_get_time();
+  uint64_t elapsedMicros = nowMicros - ntpSyncedMicros;
+  time_t currentSecond = ntpSyncedTime + (elapsedMicros / 1000000ULL);
+
+  // 轉換為 struct tm
+  struct tm timeInfo;
+  localtime_r(&currentSecond, &timeInfo);
+
+  // 顯示目前時間
   char buf[64];
-  snprintf(buf, sizeof(buf), "⏰ %04u/%02u/%02u %02u:%02u:%02u",
-           now.Year(), now.Month(), now.Day(),
-           now.Hour(), now.Minute(), now.Second());
+  snprintf(buf, sizeof(buf), "⏰ %04d/%02d/%02d %02d:%02d:%02d",
+           timeInfo.tm_year + 1900, timeInfo.tm_mon + 1, timeInfo.tm_mday,
+           timeInfo.tm_hour, timeInfo.tm_min, timeInfo.tm_sec);
   Serial.println(buf);
 
-  // 轉換成 struct tm
-  struct tm timeInfo;
-  timeInfo.tm_year = now.Year() - 1900;
-  timeInfo.tm_mon  = now.Month() - 1;
-  timeInfo.tm_mday = now.Day();
-  timeInfo.tm_hour = now.Hour();
-  timeInfo.tm_min  = now.Minute();
-  timeInfo.tm_sec  = now.Second();
-  timeInfo.tm_wday = now.DayOfWeek();
-
-  // 計算每年的第幾天
+  // 計算每年的第幾天（tm_yday）
   static const int daysInMonth[] = { 31,28,31,30,31,30,31,31,30,31,30,31 };
   timeInfo.tm_yday = timeInfo.tm_mday - 1;
   for (int i = 0; i < timeInfo.tm_mon; ++i) {
@@ -199,10 +209,10 @@ while (true) {
   }
   int year = timeInfo.tm_year + 1900;
   if ((year % 4 == 0 && year % 100 != 0) || (year % 400 == 0)) {
-    if (timeInfo.tm_mon > 1) timeInfo.tm_yday += 1; // 閏年加一天
+    if (timeInfo.tm_mon > 1) timeInfo.tm_yday += 1;
   }
 
-  // 🧮 處理閏秒（如果有）
+  // 處理閏秒（預設不使用，可擴充）
   int se = timeInfo.tm_sec, sh = 0;
   if (se == 60) {
     sg[53] = LS1 = 1; sg[54] = LS2 = 0; se = 59; sh = 1;
@@ -218,11 +228,10 @@ while (true) {
   set_wday(timeInfo.tm_wday);
   set_year(year - 2000);
 
-  // 🔁 傳送 JJY 波形（sg[0] 到 sg[59]）
+  // 發送 sg[] 時碼
   Serial.printf("📡 開始發送時間碼：從 %02d 秒起，預計長度 %d 秒\n", se, 60 + sh - se);
   char t[64];
   for (int i = se; i < 60 + sh && i < 62; ++i) {
-    // 安全值檢查
     if (sg[i] != -1 && sg[i] != 0 && sg[i] != 1 && sg[i] != 255) {
       Serial.printf("⚠️ sg[%d] 值異常：%d，自動修正為 0\n", i, sg[i]);
       sg[i] = 0;
@@ -231,7 +240,6 @@ while (true) {
     snprintf(t, sizeof(t), "%02d ", sg[i]);
     Serial.print(t);
 
-    // 發送對應波形
     switch (sg[i]) {
       case -1:
       case 255:
@@ -243,8 +251,9 @@ while (true) {
     }
   }
 
-  delay(5); // 稍微喘口氣，避免佔用過多資源
+  delay(5);  // 短暫延遲避免過度佔用 CPU
 }
+
 
 
 void set_year(int n){
