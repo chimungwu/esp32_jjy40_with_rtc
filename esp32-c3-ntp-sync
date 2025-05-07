@@ -16,28 +16,31 @@
 #include <Arduino.h>
 #include <driver/ledc.h>
 #include <WiFi.h>
-#define TIMEZONE_OFFSET_SEC (9 * 3600L)  // UTC+9（日本時間，改成 8*3600L 為台灣時間）
 
-// hardware
-const int ledChannel = 0; // 使用するLEDチャンネル ---> JJT antena 
-const int ledPin =6;     // PWM出力するGPIOピン ANT G-5
+// === Hardware Settings ===
+const int ledChannel = 0;  // PWM channel for JJY signal output
+const int ledPin     = 6;  // PWM output pin (connected to JJY antenna via GPIO6)
+#define STATUS_LED    8    // Onboard status LED (GPIO8 on ESP32-C3 SuperMini)
 
-#define STATUS_LED 8
+// === JJY Signal Variables ===
+char P0, P1, P2, P3, P4, P5;
+const char M = P0 = P1 = P2 = P3 = P4 = P5 = -1;  // Marker signal (-1 or 255)
+char PA1, PA2;                                   // Parity bits
+char SU1, LS1, LS2;                              // Special flags (e.g., leap second)
+char sg[60];                                     // Signal data buffer (1 minute)
 
-char P0,P1,P2,P3,P4,P5;
-const char M = P0 = P1 = P2 = P3 = P4 = P5 = -1;
-char PA1,PA2, SU1,  LS1,LS2;
+// === WiFi Settings ===
+const char* ssid     = "SSID";        // Replace with your Wi-Fi SSID
+const char* password = "PASSWORD";  // Replace with your Wi-Fi password
 
-char  sg[60];
+// === Time Sync Status ===
+bool ntpSynced       = true;          // Set to true if NTP sync succeeds
+unsigned long lastBlink = 0;          // Last LED toggle time
+bool ledState        = false;         // LED on/off flag
 
-const char* ssid     = "SSID";  // ご自身のWi-FiネットワークのSSIDを入力してください
-const char* password = "PASSWORD";  // Wi-Fiネットワークのパスワードを入力してください
-
-#define STATUS_LED 8  // SuperMini 內建 LED
-bool ntpSynced = true;  // 假設 setup 中已成功對時（如果失敗會改為 false）
-unsigned long lastBlink = 0;
-bool ledState = false;
-
+// === Timezone Configuration ===
+#define TIMEZONE_OFFSET_SEC (9 * 3600L)  // UTC+9 (Japan Standard Time)
+                                         // Use 8 * 3600L for Taiwan (UTC+8)
 void setup() {
   Serial.begin(115200);
   delay(1000);
@@ -49,18 +52,19 @@ void setup() {
   ledcSetup(ledChannel, 40000, 8);
   ledcAttachPin(ledPin, ledChannel);
 
+  Serial.print("🔌 Connecting to WiFi");
   WiFi.mode(WIFI_STA);
   WiFi.begin(ssid, password);
 
-  Serial.print("🔌 Connecting to WiFi");
   while (WiFi.status() != WL_CONNECTED) {
     delay(300);
     Serial.print(".");
   }
   Serial.println("\n📶 WiFi connected.");
 
-  // 設定 NTP 時間與時區
-  configTime(TIMEZONE_OFFSET_SEC, 0, 
+  // 設定 NTP 時區與伺服器
+  Serial.println("⏳ Preparing to synchronize time via NTP...");
+  configTime(TIMEZONE_OFFSET_SEC, 0,
              "time.stdtime.gov.tw", "time.google.com", "ntp.twnic.tw");
 
   struct tm timeInfo;
@@ -78,13 +82,16 @@ void setup() {
     Serial.println("\n✅ NTP time synchronized successfully.");
 
     char timeStr[64];
-    sprintf(timeStr, "🕒 Current Time: %04d-%02d-%02d %02d:%02d:%02d",
-            timeInfo.tm_year + 1900, timeInfo.tm_mon + 1, timeInfo.tm_mday,
-            timeInfo.tm_hour, timeInfo.tm_min, timeInfo.tm_sec);
+    snprintf(timeStr, sizeof(timeStr),
+             "🕒 Current Time: %04d-%02d-%02d %02d:%02d:%02d",
+             timeInfo.tm_year + 1900, timeInfo.tm_mon + 1, timeInfo.tm_mday,
+             timeInfo.tm_hour, timeInfo.tm_min, timeInfo.tm_sec);
     Serial.println(timeStr);
 
     int tz_hour = TIMEZONE_OFFSET_SEC / 3600;
     Serial.printf("🌐 Timezone: UTC%+d\n", tz_hour);
+
+    Serial.println("🧭 Waiting to align to the top of the minute...");
   } else {
     Serial.println("\n❌ Failed to synchronize time via NTP.");
     ntpSynced = false;
