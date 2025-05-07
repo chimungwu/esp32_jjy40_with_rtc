@@ -148,24 +148,24 @@ void setup() {
     Serial.println("❌ 無法連上 WiFi");
   }
 
-  // 📦 如果 NTP 失敗，改用 RTC
-  if (!ntpSuccess) {
-    if (rtc.IsDateTimeValid()) {
-      Serial.println("⚠️ 使用 RTC 內部時間：");
-      RtcDateTime now = rtc.GetDateTime();
-      char buf[64];
-      sprintf(buf, "⏰ RTC 時間：%04u/%02u/%02u %02u:%02u:%02u",
-              now.Year(), now.Month(), now.Day(),
-              now.Hour(), now.Minute(), now.Second());
-      Serial.println(buf);
+if (!ntpSuccess) {
+  if (rtc.IsDateTimeValid()) {
+    Serial.println("⚠️ 使用 RTC 內部時間：");
+    RtcDateTime now = rtc.GetDateTime();
+    char buf[64];
+    sprintf(buf, "⏰ RTC 時間：%04u/%02u/%02u %02u:%02u:%02u",
+            now.Year(), now.Month(), now.Day(),
+            now.Hour(), now.Minute(), now.Second());
+    Serial.println(buf);
 
-      if (now.Year() < 2020) {
-        Serial.println("❗ RTC 時間異常（小於 2020），請確認 RTC 電池或是否已初始化");
-      }
-    } else {
-      Serial.println("🛑 RTC 時間無效，無法取得正確時間！");
+    if (now.Year() < 2020) {
+      Serial.println("❗ RTC 時間異常（小於 2020），請確認 RTC 電池或是否已初始化");
     }
+  } else {
+    Serial.println("🛑 RTC 時間無效，無法取得正確時間！");
   }
+}
+
 
   // 初始化發波器
   set_fix();
@@ -177,23 +177,47 @@ void setup() {
 
 
 void loop() {
-  // 🕛 等待進入真正整秒（微秒 < 1000 表示接近 0 秒）
-  while (true) {
+  struct tm timeInfo;
+
+  // 判斷是否成功同步過 NTP（有微秒基準）
+  if (ntpSyncedMicros > 0) {
+    // NTP 模式：用 esp_timer + UTC 秒推算
+    while (true) {
+      uint64_t nowMicros = esp_timer_get_time();
+      uint32_t offset = (nowMicros - ntpSyncedMicros) % 1000000UL;
+      if (offset < 1000) break;
+      delayMicroseconds(100);
+    }
+
     uint64_t nowMicros = esp_timer_get_time();
-    uint32_t offset = (nowMicros - ntpSyncedMicros) % 1000000UL;
-    if (offset < 1000) break;  // 對齊秒起點 ±1ms
-    delayMicroseconds(100);   // 精細等待
+    time_t currentSecond = ntpSyncedTime + ((nowMicros - ntpSyncedMicros) / 1000000ULL);
+    localtime_r(&currentSecond, &timeInfo);
+  } else {
+    // RTC fallback 模式：直接使用 RTC 模組時間
+    RtcDateTime now = rtc.GetDateTime();
+    if (!now.IsValid()) {
+      Serial.println("🛑 RTC 時間無效，跳過此次發波");
+      delay(1000);
+      return;
+    }
+
+    // 手動轉換成 struct tm 結構（避免 localtime_r 時區誤導）
+    timeInfo.tm_year = now.Year() - 1900;
+    timeInfo.tm_mon  = now.Month() - 1;
+    timeInfo.tm_mday = now.Day();
+    timeInfo.tm_hour = now.Hour();
+    timeInfo.tm_min  = now.Minute();
+    timeInfo.tm_sec  = now.Second();
+    timeInfo.tm_wday = now.DayOfWeek();
   }
 
-  // 🎯 推算目前時間（second + microsecond）
-  uint64_t nowMicros = esp_timer_get_time();
-  uint64_t elapsedMicros = nowMicros - ntpSyncedMicros;
-  time_t currentSecond = ntpSyncedTime + (elapsedMicros / 1000000ULL);
+  // 執行發波
+  printAndSendJJY(timeInfo);
+  delay(5);
+}
 
-  // 轉換為 struct tm
-  struct tm timeInfo;
-  localtime_r(&currentSecond, &timeInfo);
 
+void printAndSendJJY(struct tm &timeInfo) {
   // 顯示目前時間
   char buf[64];
   snprintf(buf, sizeof(buf), "⏰ %04d/%02d/%02d %02d:%02d:%02d",
@@ -201,7 +225,7 @@ void loop() {
            timeInfo.tm_hour, timeInfo.tm_min, timeInfo.tm_sec);
   Serial.println(buf);
 
-  // 計算每年的第幾天（tm_yday）
+  // 計算 tm_yday
   static const int daysInMonth[] = { 31,28,31,30,31,30,31,31,30,31,30,31 };
   timeInfo.tm_yday = timeInfo.tm_mday - 1;
   for (int i = 0; i < timeInfo.tm_mon; ++i) {
@@ -212,7 +236,7 @@ void loop() {
     if (timeInfo.tm_mon > 1) timeInfo.tm_yday += 1;
   }
 
-  // 處理閏秒（預設不使用，可擴充）
+  // 處理閏秒
   int se = timeInfo.tm_sec, sh = 0;
   if (se == 60) {
     sg[53] = LS1 = 1; sg[54] = LS2 = 0; se = 59; sh = 1;
@@ -228,7 +252,7 @@ void loop() {
   set_wday(timeInfo.tm_wday);
   set_year(year - 2000);
 
-  // 發送 sg[] 時碼
+  // 發送 JJY 時碼
   Serial.printf("📡 開始發送時間碼：從 %02d 秒起，預計長度 %d 秒\n", se, 60 + sh - se);
   char t[64];
   for (int i = se; i < 60 + sh && i < 62; ++i) {
@@ -242,18 +266,12 @@ void loop() {
 
     switch (sg[i]) {
       case -1:
-      case 255:
-        mark(); break;
-      case 0:
-        zero(); break;
-      case 1:
-        one(); break;
+      case 255: mark(); break;
+      case 0: zero(); break;
+      case 1: one(); break;
     }
   }
-
-  delay(5);  // 短暫延遲避免過度佔用 CPU
 }
-
 
 
 void set_year(int n){
