@@ -28,14 +28,9 @@ const char M = P0 = P1 = P2 = P3 = P4 = P5 = -1;
 char PA1,PA2, SU1,  LS1,LS2;
 
 char  sg[60];
-///char  min40, min20, min10, min8, min4, min2, min1;
-///char  hr20, hr10, hr8, hr4, hr2, hr1;
-///char  dy200, dy100, dy80, dy40, dy20, dy10, dy8, dy4, dy2, dy1;
-///char  yr80, yr40, yr20, yr10, yr8, yr4, yr2, yr1;
-///char  wd4, wd2, wd1;
 
-const char* ssid     = "MAIN";  // ご自身のWi-FiネットワークのSSIDを入力してください
-const char* password = "0988660930";  // Wi-Fiネットワークのパスワードを入力してください
+const char* ssid     = "SSID";  // 你的WIFI名稱
+const char* password = "PASSWORD";  // 你的WIFI密碼
 
 #define STATUS_LED 8  // SuperMini 內建 LED
 bool ntpSynced = false;  // 假設 setup 中已成功對時（如果失敗會改為 false）
@@ -59,6 +54,8 @@ void setup() {
   while (WiFi.status() != WL_CONNECTED) {
     delay(300);
   }
+
+//預設日本時區，台灣時區為8
 
   configTime(9 * 3600L, 0, "time.stdtime.gov.tw", "time.google.com", "ntp.twnic.tw");
 
@@ -94,21 +91,6 @@ void loop() {
     delay(1000); // 若未同步，避免頻繁重試
   }
 }
-
-
-///構造体 tm はtime.h
-///struct tm {
-///  int tm_sec;      /// 秒 [0-61] 最大2秒までのうるう秒を考慮
-///  int tm_min;      /// 分 [0-59]
-///  int tm_hour;     /// 時 [0-23]
-///  int tm_mday;     /// 日 [1-31]
-///  int tm_mon;      /// 月 [0-11] 0から始まることに注意
-///  int tm_year;     /// 年 [1900からの経過年数]
-///  int tm_wday;     /// 曜日 [0:日 1:月 ... 6:土]
-///  int tm_yday;     /// 年内の通し日数 [0-365]
-///  int tm_isdst;    /// 夏時間フラグ　[夏時間を採用しているときに正、採用していないときに 0、この情報が得られないときに負]
-///};
-
 
 void set_year(int n){
   
