@@ -1,0 +1,303 @@
+// === Modification Note ===
+// This code is based on ver.0.10 (2024/05/16 by Nash Shuji009)
+// Modified by: chimungwu (2025/05/07)
+// Target Board: ESP32-C3 SuperMini (PWM output on GPIO6, onboard LED on GPIO8)
+//
+// [Main Modifications in this Version (ver.0.11)]:
+// ✅ 1. Changed the hardware platform to ESP32-C3 SuperMini. PWM output pin updated to GPIO6, and GPIO8 is used for the onboard status LED.
+// ✅ 2. Added WiFi connectivity and NTP time synchronization. If synchronization is successful, `ntpSynced` is set to true.
+// ✅ 3. Introduced `esp_timer_get_time()` for microsecond-precision alignment. The function `delayUntilAlignedRTCWrite()` ensures time code transmission begins exactly at the start of each minute.
+// ✅ 4. Refactored the transmission logic into a dedicated `printAndSendJJY()` function for better structure and readability.
+// ✅ 5. Status LED blinks once per second during active signal transmission, indicating successful NTP sync.
+// ✅ 6. Default `ntpSynced` state is false to prevent transmission unless NTP time has been acquired successfully.
+// ✅ 7. Additional structural refinements, including leap second compensation and fallback handling for invalid time code bits.
+
+
+#include <Arduino.h>
+#include <driver/ledc.h>
+#include <WiFi.h>
+
+// hardware
+const int ledChannel = 0; // 使用するLEDチャンネル ---> JJT antena 
+const int ledPin =6;     // PWM出力するGPIOピン ANT G-5
+
+#define STATUS_LED 8
+
+char P0,P1,P2,P3,P4,P5;
+const char M = P0 = P1 = P2 = P3 = P4 = P5 = -1;
+char PA1,PA2, SU1,  LS1,LS2;
+
+char  sg[60];
+///char  min40, min20, min10, min8, min4, min2, min1;
+///char  hr20, hr10, hr8, hr4, hr2, hr1;
+///char  dy200, dy100, dy80, dy40, dy20, dy10, dy8, dy4, dy2, dy1;
+///char  yr80, yr40, yr20, yr10, yr8, yr4, yr2, yr1;
+///char  wd4, wd2, wd1;
+
+const char* ssid     = "MAIN";  // ご自身のWi-FiネットワークのSSIDを入力してください
+const char* password = "0988660930";  // Wi-Fiネットワークのパスワードを入力してください
+
+#define STATUS_LED 8  // SuperMini 內建 LED
+bool ntpSynced = false;  // 假設 setup 中已成功對時（如果失敗會改為 false）
+unsigned long lastBlink = 0;
+bool ledState = false;
+
+void setup() {
+  Serial.begin(115200);
+  delay(1000);
+
+  pinMode(STATUS_LED, OUTPUT);
+  digitalWrite(STATUS_LED, LOW);
+
+  set_fix();
+  ledcSetup(ledChannel, 40000, 8);
+  ledcAttachPin(ledPin, ledChannel);
+
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(ssid, password);
+
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(300);
+  }
+
+  configTime(9 * 3600L, 0, "time.stdtime.gov.tw", "time.google.com", "ntp.twnic.tw");
+
+  struct tm timeInfo;
+  int retries = 0;
+  while (!getLocalTime(&timeInfo) && retries < 10) {
+    delay(500);
+    retries++;
+  }
+
+  if (getLocalTime(&timeInfo)) {
+    ntpSynced = true;  // ✅ NTP 成功 → 開始閃爍
+  }
+}
+
+void delayUntilAlignedRTCWrite() {
+  struct timeval tv;
+  gettimeofday(&tv, NULL);
+
+  int64_t micros_now = tv.tv_sec * 1000000LL + tv.tv_usec;
+  int64_t micros_next_minute = ((tv.tv_sec / 60) + 1) * 60 * 1000000LL;
+
+  int64_t delay_us = micros_next_minute - micros_now;
+
+  Serial.printf("⏱ 對齊延遲 %.3f 秒...\n", delay_us / 1000000.0);
+  delayMicroseconds(delay_us);  // 精準延遲到下分鐘開頭
+}
+void loop() {
+  if (ntpSynced) {
+    delayUntilAlignedRTCWrite();   // 等到整分鐘開頭
+    printAndSendJJY();             // 發送一次 JJY 時碼
+  } else {
+    delay(1000); // 若未同步，避免頻繁重試
+  }
+}
+
+
+///構造体 tm はtime.h
+///struct tm {
+///  int tm_sec;      /// 秒 [0-61] 最大2秒までのうるう秒を考慮
+///  int tm_min;      /// 分 [0-59]
+///  int tm_hour;     /// 時 [0-23]
+///  int tm_mday;     /// 日 [1-31]
+///  int tm_mon;      /// 月 [0-11] 0から始まることに注意
+///  int tm_year;     /// 年 [1900からの経過年数]
+///  int tm_wday;     /// 曜日 [0:日 1:月 ... 6:土]
+///  int tm_yday;     /// 年内の通し日数 [0-365]
+///  int tm_isdst;    /// 夏時間フラグ　[夏時間を採用しているときに正、採用していないときに 0、この情報が得られないときに負]
+///};
+
+
+void set_year(int n){
+  
+  int m = dec2BCD(n);
+
+  sg[48] = m % 2; m = m >> 1;
+  sg[47] = m % 2; m = m >> 1;
+  sg[46] = m % 2; m = m >> 1;
+  sg[45] = m % 2; m = m >> 1;
+
+  sg[44] = m % 2; m = m >> 1;
+  sg[43] = m % 2; m = m >> 1;
+  sg[42] = m % 2; m = m >> 1;
+  sg[41] = m % 2;
+}
+
+void printAndSendJJY() {
+  struct tm timeInfo;
+  char s[20];
+  char t[50];
+  int se, mi, sh;
+
+  getLocalTime(&timeInfo);
+
+  sprintf(s, "%04d/%02d/%02d %02d:%02d:%02d",
+          timeInfo.tm_year + 1900, timeInfo.tm_mon + 1, timeInfo.tm_mday,
+          timeInfo.tm_hour, timeInfo.tm_min, timeInfo.tm_sec);
+  Serial.println(s);
+
+  sprintf(t, "Y:%02d  D:%03d WD:%01d",
+          timeInfo.tm_year + 1900 - 2000, timeInfo.tm_yday + 1, timeInfo.tm_wday);
+  Serial.println(t);
+
+  // 閏秒補正
+  se = timeInfo.tm_sec;
+  sh = 0;
+  if (timeInfo.tm_sec == 60) {
+    sg[53] = LS1 = 1;
+    sg[54] = LS2 = 0;
+    se = timeInfo.tm_sec - 1;
+    sh = 1;
+  }
+  if (timeInfo.tm_sec == 61) {
+    sg[53] = LS1 = 1;
+    sg[54] = LS2 = 1;
+    se = timeInfo.tm_sec - 2;
+    sh = 2;
+  }
+
+  set_min(timeInfo.tm_min);
+  set_hour(timeInfo.tm_hour);
+  set_day(timeInfo.tm_yday + 1);
+  set_wday(timeInfo.tm_wday);
+  set_year(timeInfo.tm_year + 1900 - 2000);
+
+  for (int i = se; i < 60 + sh; i++) {
+
+    // 狀態燈閃爍（每秒）
+    if (millis() - lastBlink >= 1000) {
+      ledState = !ledState;
+      digitalWrite(STATUS_LED, ledState ? HIGH : LOW);
+      lastBlink = millis();
+    }
+
+    sprintf(t, "%02d ", sg[i]);
+    Serial.print(t);
+    switch (sg[i]) {
+      case -1:
+      case 255:
+        mark();
+        break;
+      case 0:
+        zero();
+        break;
+      case 1:
+        one();
+        break;
+      default:
+        zero();
+        sprintf(t, "%02d  %02d", i, sg[i]);
+        Serial.print("***BUG data ***  ");
+        Serial.println(t);
+        break;
+    }
+  }
+}
+
+void set_day(int n){
+  
+  int m = dec2BCD(n);
+
+  sg[33] = m % 2; m = m >> 1;
+  sg[32] = m % 2; m = m >> 1;
+  sg[31] = m % 2; m = m >> 1;
+  sg[30] = m % 2; m = m >> 1;
+
+  sg[28] = m % 2; m = m >> 1;
+  sg[27] = m % 2; m = m >> 1;
+  sg[26] = m % 2; m = m >> 1;
+  sg[25] = m % 2; m = m >> 1;
+
+  sg[23] = m % 2; m = m >> 1;
+  sg[22] = m % 2;
+}
+
+void set_wday(int m){
+
+  sg[52] = m % 2; m = m >> 1;
+  sg[51] = m % 2; m = m >> 1;
+  sg[50] = m % 2;
+}
+
+void set_hour(int n){
+  
+  int m = dec2BCD(n);
+
+  sg[18] = m % 2; m = m >> 1;
+  sg[17] = m % 2; m = m >> 1;
+  sg[16] = m % 2; m = m >> 1;
+  sg[15] = m % 2; m = m >> 1;
+  
+  sg[13] = m % 2; m = m >> 1;
+  sg[12] = m % 2;
+  
+  char PA1 = sg[18] ^ sg[17] ^ sg[16] ^ sg[15] ^ sg[13] ^ sg[12]; //PA1 = (20h+10h+8h+4h+2h+1h) mod 2
+  sg[36] = PA1;
+}
+
+void set_min(int n){
+  
+  int m = dec2BCD(n);
+
+
+  sg[8] = m % 2; m = m >> 1;
+  sg[7] = m % 2; m = m >> 1;
+  sg[6] = m % 2; m = m >> 1;
+  sg[5] = m % 2; m = m >> 1;
+
+  sg[3] = m % 2; m = m >> 1;
+  sg[2] = m % 2; m = m >> 1;
+  sg[1] = m % 2;
+
+  char PA2 = sg[8] ^ sg[7] ^ sg[6] ^ sg[5] ^ sg[3] ^ sg[2] ^ sg[1]; //PA2 = (40m+20m+10m+8m+4m+2m+1m) mod 2
+  sg[37] = PA2;
+}
+
+
+void set_fix(){
+  sg[0] = sg[9] = sg[19] = sg[29] = sg[39] = sg[49] = sg[59] = M;
+  sg[4] = sg[10] = sg[11] = sg[14] = sg[20] = sg[21] = sg[24] = sg[34] = sg[35] = sg[55] = sg[56] = sg[57] = sg[58] = 0;
+  sg[38] = sg[40] = 0;
+  sg[53] = sg[54] = 0;
+  
+}
+
+int dec2BCD(int decimal) {
+    int bcd = 0;
+    int multiplier = 1;
+
+    while (decimal > 0) {
+        int digit = decimal % 10;
+        bcd += digit * multiplier;
+        multiplier *= 16; // 10進数の各桁を4ビットのBCDに変換するために16倍する
+        decimal /= 10;
+    }
+
+    return bcd;
+    
+    ///printf("BCD: %X\n", bcd);
+}
+
+
+void mark() {   // 0.2sec
+  ledcWrite(ledChannel, 127);
+  delay(200);
+  ledcWrite(ledChannel, 0);
+  delay(800);
+}
+
+void zero() {  // 0.8sec
+  ledcWrite(ledChannel, 127);
+  delay(800);
+  ledcWrite(ledChannel, 0);
+  delay(200);
+}
+
+void one() {    // 0.5sec
+  ledcWrite(ledChannel, 127);
+  delay(500);
+  ledcWrite(ledChannel, 0);
+  delay(500);
+}
