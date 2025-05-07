@@ -4,16 +4,34 @@
 // 📡 ESP32 JJY 40kHz Transmitter with RTC Backup & NTP Sync
 //
 // 🛠️ Features:
-//   - Generate 40kHz PWM signal via GPIO26 to simulate JJY time code
-//   - Automatically sync time via WiFi NTP on startup
-//   - Includes DS1302 RTC support to maintain accurate time even without network
-//   - Fallback to RTC time if NTP fails (offline mode)
-//   - Expanded sg[] buffer to prevent overflow and added safe buffer operations
-//   - Enhanced runtime logs and error messages for easier debugging
+//   - Generates a 40kHz PWM signal on GPIO26 to simulate the Japanese JJY time code (40kHz band).
+//   - Automatically synchronizes with NTP servers over WiFi at startup.
+//   - Writes precisely aligned NTP time to a DS1302 RTC module for offline fallback use.
+//   - Falls back to RTC time when WiFi/NTP is unavailable.
+//   - In NTP mode, uses microsecond-level correction (esp_timer) for accurate second alignment.
+//   - In RTC mode, uses DS1302 hardware time directly.
+//
+// 🌐 Time Zone Configuration:
+//   - Default: UTC+9 (Japan Standard Time).
+//   - Modify `timeZoneOffset` to change time zone (in seconds).
+//
+// 📦 Dependencies:
+//   - NTP time sync: `configTime()` and `getLocalTime()`
+//   - RTC support: Makuna RtcDS1302 library
+//   - PWM signal generation: ESP32 `ledcWrite()` to control 40kHz square wave
 //
 // 🧷 Hardware Wiring:
-//   - Antenna (loop type): GPIO26 → 220Ω → Wire Loop → GND
-//   - RTC DS1302: IO=GPIO13, SCLK=GPIO14, RST=GPIO15
+//   - Antenna: GPIO26 → 220Ω resistor → Loop coil → GND
+//   - RTC DS1302 module:
+//       IO    → GPIO13
+//       SCLK  → GPIO14
+//       RST   → GPIO15
+//
+// 🔧 Configurable Parameters:
+//   - `timeZoneOffset`: Time zone offset in seconds (default = 9 * 3600 for JST)
+//   - `SSID`, `PASSWORD`: WiFi credentials
+//   - `wifiStatusLED`: Status LED (lights up when NTP sync succeeds)
+
 
 #include <Arduino.h>
 #include <driver/ledc.h>
