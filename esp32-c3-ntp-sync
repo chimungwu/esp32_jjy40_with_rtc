@@ -16,6 +16,7 @@
 #include <Arduino.h>
 #include <driver/ledc.h>
 #include <WiFi.h>
+#define TIMEZONE_OFFSET_SEC (9 * 3600L)  // UTC+9（日本時間，改成 8*3600L 為台灣時間）
 
 // hardware
 const int ledChannel = 0; // 使用するLEDチャンネル ---> JJT antena 
@@ -29,11 +30,11 @@ char PA1,PA2, SU1,  LS1,LS2;
 
 char  sg[60];
 
-const char* ssid     = "SSID";  // 你的WIFI名稱
-const char* password = "PASSWORD";  // 你的WIFI密碼
+const char* ssid     = "SSID";  // ご自身のWi-FiネットワークのSSIDを入力してください
+const char* password = "PASSWORD";  // Wi-Fiネットワークのパスワードを入力してください
 
 #define STATUS_LED 8  // SuperMini 內建 LED
-bool ntpSynced = false;  // 假設 setup 中已成功對時（如果失敗會改為 false）
+bool ntpSynced = true;  // 假設 setup 中已成功對時（如果失敗會改為 false）
 unsigned long lastBlink = 0;
 bool ledState = false;
 
@@ -51,26 +52,44 @@ void setup() {
   WiFi.mode(WIFI_STA);
   WiFi.begin(ssid, password);
 
+  Serial.print("🔌 Connecting to WiFi");
   while (WiFi.status() != WL_CONNECTED) {
     delay(300);
+    Serial.print(".");
   }
+  Serial.println("\n📶 WiFi connected.");
 
-//預設日本時區，台灣時區為8
-
-  configTime(9 * 3600L, 0, "time.stdtime.gov.tw", "time.google.com", "ntp.twnic.tw");
+  // 設定 NTP 時間與時區
+  configTime(TIMEZONE_OFFSET_SEC, 0, 
+             "time.stdtime.gov.tw", "time.google.com", "ntp.twnic.tw");
 
   struct tm timeInfo;
   int retries = 0;
+
+  Serial.print("⏳ Synchronizing time via NTP");
   while (!getLocalTime(&timeInfo) && retries < 10) {
     delay(500);
+    Serial.print(".");
     retries++;
   }
 
   if (getLocalTime(&timeInfo)) {
-    ntpSynced = true;  // ✅ NTP 成功 → 開始閃爍
+    ntpSynced = true;
+    Serial.println("\n✅ NTP time synchronized successfully.");
+
+    char timeStr[64];
+    sprintf(timeStr, "🕒 Current Time: %04d-%02d-%02d %02d:%02d:%02d",
+            timeInfo.tm_year + 1900, timeInfo.tm_mon + 1, timeInfo.tm_mday,
+            timeInfo.tm_hour, timeInfo.tm_min, timeInfo.tm_sec);
+    Serial.println(timeStr);
+
+    int tz_hour = TIMEZONE_OFFSET_SEC / 3600;
+    Serial.printf("🌐 Timezone: UTC%+d\n", tz_hour);
+  } else {
+    Serial.println("\n❌ Failed to synchronize time via NTP.");
+    ntpSynced = false;
   }
 }
-
 void delayUntilAlignedRTCWrite() {
   struct timeval tv;
   gettimeofday(&tv, NULL);
@@ -81,12 +100,24 @@ void delayUntilAlignedRTCWrite() {
   int64_t delay_us = micros_next_minute - micros_now;
 
   Serial.printf("⏱ 對齊延遲 %.3f 秒...\n", delay_us / 1000000.0);
-  delayMicroseconds(delay_us);  // 精準延遲到下分鐘開頭
+
+  if (delay_us >= 1000) {
+    delay(delay_us / 1000);                  // 毫秒以上部分
+    delayMicroseconds(delay_us % 1000);      // 剩下微秒
+  } else {
+    delayMicroseconds(delay_us);
+  }
 }
+
+bool hasAligned = false;  // ⏱ 只在第一次對齊
+
 void loop() {
   if (ntpSynced) {
-    delayUntilAlignedRTCWrite();   // 等到整分鐘開頭
-    printAndSendJJY();             // 發送一次 JJY 時碼
+    if (!hasAligned) {
+      delayUntilAlignedRTCWrite();  // ⏱ 只做一次
+      hasAligned = true;
+    }
+    printAndSendJJY();  // 每分鐘發送時碼
   } else {
     delay(1000); // 若未同步，避免頻繁重試
   }
@@ -109,8 +140,8 @@ void set_year(int n){
 
 void printAndSendJJY() {
   struct tm timeInfo;
-  char s[20];
-  char t[50];
+  char s[40];
+  char t[64];
   int se, mi, sh;
 
   getLocalTime(&timeInfo);
