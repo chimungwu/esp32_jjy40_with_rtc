@@ -151,23 +151,37 @@ if (getLocalTime(&timeInfo)) {
 }
 
 void loop() {
-  RtcDateTime now = rtc.GetDateTime();
 
-  // 驗證 RTC 時間
+  if (!rtc.IsDateTimeValid()) {
+  Serial.println("🛑 RTC 時間無效，跳過此次發波");
+  delay(1000);
+  return;
+}
+
+  // 🕛 等待整秒交界：避免 sg[0] 發送不是在秒 0.000
+RtcDateTime prev = rtc.GetDateTime();
+while (true) {
+  RtcDateTime curr = rtc.GetDateTime();
+  if (curr.Second() != prev.Second() && curr.Second() != 0) break;
+  delay(1);
+}
+
+  // 🎯 抓取秒 0 時的時間，作為發波基準
+  RtcDateTime now = rtc.GetDateTime();
   if (!now.IsValid()) {
     Serial.println("⚠️ RTC 時間無效，請檢查模組或重新初始化");
     delay(2000);
     return;
   }
 
-  // 顯示 RTC 時間
-  char buf[64];  // 增加 buffer 大小
+  // 顯示當前時間
+  char buf[64];
   snprintf(buf, sizeof(buf), "⏰ %04u/%02u/%02u %02u:%02u:%02u",
            now.Year(), now.Month(), now.Day(),
            now.Hour(), now.Minute(), now.Second());
   Serial.println(buf);
 
-  // 轉換為 struct tm 結構
+  // 轉換成 struct tm
   struct tm timeInfo;
   timeInfo.tm_year = now.Year() - 1900;
   timeInfo.tm_mon  = now.Month() - 1;
@@ -177,7 +191,7 @@ void loop() {
   timeInfo.tm_sec  = now.Second();
   timeInfo.tm_wday = now.DayOfWeek();
 
-  // 計算 tm_yday (每年的第幾天)
+  // 計算每年的第幾天
   static const int daysInMonth[] = { 31,28,31,30,31,30,31,31,30,31,30,31 };
   timeInfo.tm_yday = timeInfo.tm_mday - 1;
   for (int i = 0; i < timeInfo.tm_mon; ++i) {
@@ -185,10 +199,10 @@ void loop() {
   }
   int year = timeInfo.tm_year + 1900;
   if ((year % 4 == 0 && year % 100 != 0) || (year % 400 == 0)) {
-    if (timeInfo.tm_mon > 1) timeInfo.tm_yday += 1; // 閏年補 2 月
+    if (timeInfo.tm_mon > 1) timeInfo.tm_yday += 1; // 閏年加一天
   }
 
-  // 處理閏秒
+  // 🧮 處理閏秒（如果有）
   int se = timeInfo.tm_sec, sh = 0;
   if (se == 60) {
     sg[53] = LS1 = 1; sg[54] = LS2 = 0; se = 59; sh = 1;
@@ -196,18 +210,19 @@ void loop() {
     sg[53] = LS1 = 1; sg[54] = LS2 = 1; se = 58; sh = 2;
   }
 
-  // 編碼時間
+  // 編碼 sg[] 時碼資料
+  set_fix();
   set_min(timeInfo.tm_min);
   set_hour(timeInfo.tm_hour);
   set_day(timeInfo.tm_yday + 1);
   set_wday(timeInfo.tm_wday);
   set_year(year - 2000);
 
-  // 傳送 JJY 訊號
+  // 🔁 傳送 JJY 波形（sg[0] 到 sg[59]）
   Serial.printf("📡 開始發送時間碼：從 %02d 秒起，預計長度 %d 秒\n", se, 60 + sh - se);
-  char t[64];  // 安全長度 buffer
+  char t[64];
   for (int i = se; i < 60 + sh && i < 62; ++i) {
-    // 安全範圍檢查，避免 sg[i] 爆炸
+    // 安全值檢查
     if (sg[i] != -1 && sg[i] != 0 && sg[i] != 1 && sg[i] != 255) {
       Serial.printf("⚠️ sg[%d] 值異常：%d，自動修正為 0\n", i, sg[i]);
       sg[i] = 0;
@@ -216,6 +231,7 @@ void loop() {
     snprintf(t, sizeof(t), "%02d ", sg[i]);
     Serial.print(t);
 
+    // 發送對應波形
     switch (sg[i]) {
       case -1:
       case 255:
@@ -227,9 +243,9 @@ void loop() {
     }
   }
 
-  delay(5); // 延遲，避免干擾
-
+  delay(5); // 稍微喘口氣，避免佔用過多資源
 }
+
 
 void set_year(int n){
   
