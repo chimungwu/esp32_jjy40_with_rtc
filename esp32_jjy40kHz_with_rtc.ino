@@ -1,22 +1,26 @@
 // esp32_jjy40kHz_with_rtc.ino
-//   Customized & enhanced by Chimung, based on ver.0.11 (c) 2024/05/16 by Nash Shuji009
+//   由 Chimung 依據 ver.0.1 (2024/05/16 by Nash Shuji009) 改寫與強化，版本 ver.0.12（2025/05/08）
 //
-// 📡 ESP32 JJY 40kHz Transmitter with RTC Backup, NTP Sync & WiFiManager
+// 📡 ESP32 JJY 40kHz 電波時計模擬器，支援 RTC 備援、NTP 校時、LCD 顯示與 WiFiManager 設定
 //
-// 🛠️ Features:
-//   - Generate 40kHz PWM signal via GPIO26 to simulate JJY time code
-//   - Automatically sync time via WiFi NTP on startup with microsecond-level alignment
-//   - Includes DS1302 RTC support to maintain accurate time without network
-//   - Fallback to RTC time if NTP fails (offline mode) 
-//   - Integrated WiFiManager: auto-reconnect or enter config portal (JJY_Config) if no known AP is available
-//   - Configurable timeouts for WiFi connection and config portal mode
-//   - Expanded sg[] buffer with value safety checks to prevent overflow
-//   - Clean debug output via Serial for setup, WiFi, RTC, and transmission status
+// 🛠️ 功能特色：
+//   - 透過 GPIO26 輸出 40kHz PWM 訊號，模擬日本 JJY 電波時碼
+//   - 開機時自動透過 WiFi 連線並同步 NTP 時間，支援微秒級對齊
+//   - 可使用 DS1302 RTC 模組作為離線備援時鐘
+//   - 當 WiFi 或 NTP 同步失敗時，自動切換使用 RTC 時間進行發波
+//   - 整合 WiFiManager，若無已知 WiFi，會啟用 AP 模式（SSID: JJY-config）進入設定介面
+//   - 使用者可在設定頁輸入時區（如 +8、+9、-5），會自動套用於系統時間校正
+//   - LCD1602 顯示器每秒顯示目前台灣時間（固定 UTC+8）與系統實際發送時間與來源（NTP 或 RTC）
+//   - 若 WiFi 連線失敗，LCD 會提示使用者連接 AP 設定 WiFi（Please setup WiFi / SSID: JJY-config）
+//   - 擴充 sg[] 時碼陣列並加入值檢查防呆機制，避免溢位錯誤
+//   - Serial 序列埠提供清晰的除錯訊息：WiFi 狀態、RTC 狀態、同步與發波流程
 //
-// 🧷 Hardware Wiring:
-//   - Antenna (loop type): GPIO26 → 220Ω → Wire Loop → GND
-//   - RTC DS1302: IO=GPIO13, SCLK=GPIO14, RST=GPIO15
-//   - WiFi status LED (optional): GPIO2 (lights up when WiFi is connected)
+// 🧷 硬體接線說明：
+//   - 發波線圈（天線）：GPIO26 → 220Ω 電阻 → 單芯線圈 → GND
+//   - RTC 模組（DS1302）：IO=GPIO13, SCLK=GPIO14, RST=GPIO15
+//   - WiFi 連線狀態 LED（選配）：GPIO2（連上 WiFi 時點亮）
+//   - LCD1602（I2C 位址 0x27）：SDA/SCL 接至預設 I2C 腳位（ESP32 Nodemcu32s: SDA=21, SCL=22 或依開發板而定）
+
 
 #include <Arduino.h>
 #include <driver/ledc.h>
