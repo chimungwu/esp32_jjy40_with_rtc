@@ -63,29 +63,6 @@ const char* password = "PASSWORD";  // 請填入WIFI密碼
 uint64_t ntpSyncedMicros = 0;
 time_t ntpSyncedTime = 0;
 
-void delayUntilAlignedRTCWrite() {
-  time_t prevSec;
-  time(&prevSec);  // 取得目前整數秒
-
-  // 等到秒數跳變（跳入下一秒）
-  while (time(nullptr) == prevSec) {
-    delayMicroseconds(100);
-  }
-
-  // 記錄剛跳秒那一刻的微秒時間
-  uint64_t mark_us = esp_timer_get_time();
-
-  // 再次取得時間資訊
-  struct tm tmp;
-  getLocalTime(&tmp);  // 保證對齊整秒
-
-  // 精準補足到 300ms 再繼續
-  const uint32_t targetOffsetUs = 300000;
-  while ((esp_timer_get_time() - mark_us) < targetOffsetUs) {
-    delayMicroseconds(100);
-  }
-}
-
 void setup() {
   pinMode(wifiStatusLED, OUTPUT);
   digitalWrite(wifiStatusLED, LOW);  // 預設熄滅
@@ -131,8 +108,6 @@ void setup() {
           while (time(nullptr) == rawtime) {
             delay(1);
           }
-
-          delayUntilAlignedRTCWrite();  // 🎯 自動延遲補償
 
           getLocalTime(&timeInfo);
 
