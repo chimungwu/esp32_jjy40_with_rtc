@@ -1,43 +1,29 @@
 // esp32_jjy40kHz_with_rtc.ino
-//   Customized & enhanced by Chimung, based on ver.0.10 (c) 2024/05/16 by Nash Shuji009
+//   Customized & enhanced by Chimung, based on ver.0.11 (c) 2024/05/16 by Nash Shuji009
 //
-// 📡 ESP32 JJY 40kHz Transmitter with RTC Backup & NTP Sync
+// 📡 ESP32 JJY 40kHz Transmitter with RTC Backup, NTP Sync & WiFiManager
 //
 // 🛠️ Features:
-//   - Generates a 40kHz PWM signal on GPIO26 to simulate the Japanese JJY time code (40kHz band).
-//   - Automatically synchronizes with NTP servers over WiFi at startup.
-//   - Writes precisely aligned NTP time to a DS1302 RTC module for offline fallback use.
-//   - Falls back to RTC time when WiFi/NTP is unavailable.
-//   - In NTP mode, uses microsecond-level correction (esp_timer) for accurate second alignment.
-//   - In RTC mode, uses DS1302 hardware time directly.
-//
-// 🌐 Time Zone Configuration:
-//   - Default: UTC+9 (Japan Standard Time).
-//   - Modify `timeZoneOffset` to change time zone (in seconds).
-//
-// 📦 Dependencies:
-//   - NTP time sync: `configTime()` and `getLocalTime()`
-//   - RTC support: Makuna RtcDS1302 library
-//   - PWM signal generation: ESP32 `ledcWrite()` to control 40kHz square wave
+//   - Generate 40kHz PWM signal via GPIO26 to simulate JJY time code
+//   - Automatically sync time via WiFi NTP on startup with microsecond-level alignment
+//   - Includes DS1302 RTC support to maintain accurate time without network
+//   - Fallback to RTC time if NTP fails (offline mode) 
+//   - Integrated WiFiManager: auto-reconnect or enter config portal (JJY_Config) if no known AP is available
+//   - Configurable timeouts for WiFi connection and config portal mode
+//   - Expanded sg[] buffer with value safety checks to prevent overflow
+//   - Clean debug output via Serial for setup, WiFi, RTC, and transmission status
 //
 // 🧷 Hardware Wiring:
-//   - Antenna: GPIO26 → 220Ω resistor → Loop coil → GND
-//   - RTC DS1302 module:
-//       IO    → GPIO13
-//       SCLK  → GPIO14
-//       RST   → GPIO15
-//
-// 🔧 Configurable Parameters:
-//   - `timeZoneOffset`: Time zone offset in seconds (default = 9 * 3600 for JST)
-//   - `SSID`, `PASSWORD`: WiFi credentials
-//   - `wifiStatusLED`: Status LED (lights up when NTP sync succeeds)
-
+//   - Antenna (loop type): GPIO26 → 220Ω → Wire Loop → GND
+//   - RTC DS1302: IO=GPIO13, SCLK=GPIO14, RST=GPIO15
+//   - WiFi status LED (optional): GPIO2 (lights up when WiFi is connected)
 
 #include <Arduino.h>
 #include <driver/ledc.h>
 #include <WiFi.h>
 #include <ThreeWire.h>
 #include <RtcDS1302.h>
+#include <WiFiManager.h>  // 加在最前面
 
 // RTC 模組腳位 (依你實際接法調整)
 ThreeWire myWire(13, 14, 15); // IO, SCLK, RST
@@ -81,17 +67,23 @@ void setup() {
     Serial.println("⏱️ RTC 已啟動");
   }
 
-  // 嘗試透過 WiFi 同步 NTP
-  WiFi.mode(WIFI_STA);
-  WiFi.begin(ssid, password);
-  Serial.print("🌐 WiFi 連線中");
 
-  unsigned long start = millis();
-  while (WiFi.status() != WL_CONNECTED && millis() - start < 30000) {
-    delay(500);
-    Serial.print(".");
-  }
-  Serial.println();
+Serial.println("📶 嘗試透過 WiFiManager 自動連線...");
+Serial.println("🔧 若無法連線，將啟用設定模式：熱點名稱為 JJY_Config");
+
+WiFiManager wm;
+wm.setDebugOutput(true);    // 顯示 WiFiManager debug 訊息
+wm.setTimeout(60);         // 最多等待 60 秒
+wm.setConnectTimeout(20);     // 連線目標 AP 最多等 20 秒
+
+bool res = wm.autoConnect("JJY_Config");
+
+if (!res) {
+  Serial.println("❌ WiFiManager 連線失敗，請確認設定或進入 fallback 模式");
+} else {
+  Serial.println("✅ WiFiManager 已成功連線 WiFi");
+  digitalWrite(wifiStatusLED, HIGH);
+}
 
   bool ntpSuccess = false;
   if (WiFi.status() == WL_CONNECTED) {
