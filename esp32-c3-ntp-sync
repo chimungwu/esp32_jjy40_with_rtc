@@ -55,7 +55,6 @@ bool ledState        = false;         // LED on/off flag
 #define TIMEZONE_OFFSET_SEC (9 * 3600L)  // UTC+9 (Japan Standard Time)
                                          // Use 8 * 3600L for Taiwan (UTC+8)
 void setup() {
-
   Serial.begin(115200);
   delay(1000);
 
@@ -66,19 +65,37 @@ void setup() {
   ledcSetup(ledChannel, 40000, 8);
   ledcAttachPin(ledPin, ledChannel);
 
-  // Captive Portal 設定（自動連線 + 無線熱點模式）
-  WiFiManager wm;
-  wm.setTimeout(60); // 最多等待 1 分鐘
-  bool res = wm.autoConnect("JJY-Setup"); // 建立名稱為 JJY-Setup 的 WiFi 熱點
+  // 優先使用預設 SSID/PASSWORD 嘗試連線
+  Serial.println("📶 嘗試連接預設 WiFi...");
+  WiFi.begin(ssid, password);
 
-  if (!res) {
-    Serial.println("❌ Failed to connect and timeout occurred.");
-    ntpSynced = false;
-    return;
+  unsigned long startAttemptTime = millis();
+  while (WiFi.status() != WL_CONNECTED && millis() - startAttemptTime < 10000) {
+    delay(500);
+    Serial.print(".");
   }
 
-  Serial.println("📶 WiFi connected via Captive Portal.");
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("\n⚠️ 預設 WiFi 連線失敗，進入 WiFiManager 模式");
 
+    WiFiManager wm;
+    wm.setTimeout(60); // 最多等待 1 分鐘
+    bool res = wm.autoConnect("JJY-Setup");
+
+    if (!res) {
+      Serial.println("❌ Failed to connect and timeout occurred.");
+      ntpSynced = false;
+      return;
+    }
+
+    Serial.println("📶 WiFi connected via Captive Portal.");
+  } else {
+    Serial.println("\n✅ 成功連上預設 WiFi");
+  }
+
+  digitalWrite(STATUS_LED, HIGH);
+
+  // ⭐ 不論哪種方式連上 WiFi，都進行 NTP 同步
   configTime(TIMEZONE_OFFSET_SEC, 0, 
              "time.stdtime.gov.tw", "time.google.com", "ntp.twnic.tw");
 
@@ -109,6 +126,7 @@ void setup() {
     ntpSynced = false;
   }
 }
+
 
 void delayUntilAlignedRTCWrite() {
   struct timeval tv;
