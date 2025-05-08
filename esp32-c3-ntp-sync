@@ -86,6 +86,10 @@ void setup() {
   checkResetButton();
 
   WiFiManager wm;
+
+// 每次開機都會清除 WiFiManager 設定，強制進入 JJY-Setup 設定模式
+// ➜ 避免 Wi-Fi 或時區設定錯誤導致無法連線
+// 若未來欲記住 Wi-Fi，請註解掉 wm.resetSettings();
   wm.resetSettings();  // <== 強制清除
   WiFiManagerParameter tzParam("tz", "設定時區 (e.g. 台灣 +8,預設日本 +9)", "+9", 4);
   wm.addParameter(&tzParam);
