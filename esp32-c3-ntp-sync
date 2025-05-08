@@ -6,7 +6,6 @@
   Target Board: ESP32-C3 SuperMini
   JJY Output: GPIO6 (PWM 40kHz)
   Status LED: GPIO8 (關閉：未發送，閃爍：發送中)
-  Reset Button: GPIO0（按下2秒可清除 WiFi 與時區設定）
 
   == 功能說明 ==
   ✅ 每次開機都進入 WiFiManager「JJY-Setup」設定模式，讓使用者設定 Wi-Fi 與時區
@@ -37,7 +36,6 @@
 const int ledChannel = 0;  // PWM channel for JJY signal output
 const int ledPin     = 6;  // PWM output pin (connected to JJY antenna via GPIO6)
 #define STATUS_LED    8    // Onboard status LED (GPIO8 on ESP32-C3 SuperMini)
-#define RESET_PIN     0    // GPIO for reset button
 
 // === JJY Signal Variables ===
 char P0, P1, P2, P3, P4, P5;
@@ -56,22 +54,6 @@ Preferences prefs;
 String tzString = "+9";
 long timezoneOffsetSec = 9 * 3600L;
 
-void checkResetButton() {
-  pinMode(RESET_PIN, INPUT_PULLUP);
-  if (digitalRead(RESET_PIN) == LOW) {
-    delay(2000);
-    if (digitalRead(RESET_PIN) == LOW) {
-      Serial.println("\n🧹 清除 WiFi 和時區設定...");
-      WiFiManager wm;
-      wm.resetSettings();
-      prefs.begin("jjy", false);
-      prefs.clear();
-      prefs.end();
-      ESP.restart();
-    }
-  }
-}
-
 void setup() {
   Serial.begin(115200);
   delay(1000);
@@ -83,13 +65,7 @@ void setup() {
   ledcSetup(ledChannel, 40000, 8);
   ledcAttachPin(ledPin, ledChannel);
 
-  checkResetButton();
-
   WiFiManager wm;
-
-// 每次開機都會清除 WiFiManager 設定，強制進入 JJY-Setup 設定模式
-// ➜ 避免 Wi-Fi 或時區設定錯誤導致無法連線
-// 若未來欲記住 Wi-Fi，請註解掉 wm.resetSettings();
   wm.resetSettings();  // <== 強制清除
   WiFiManagerParameter tzParam("tz", "設定時區 (e.g. 台灣 +8,預設日本 +9)", "+9", 4);
   wm.addParameter(&tzParam);
