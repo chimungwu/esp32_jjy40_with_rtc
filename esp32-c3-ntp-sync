@@ -67,7 +67,7 @@ void setup() {
 
   WiFiManager wm;
   wm.resetSettings();  // <== 強制清除
-  WiFiManagerParameter tzParam("tz", "設定時區 (e.g. 台灣 +8,預設日本 +9)", "+9", 4);
+  WiFiManagerParameter tzParam("tz", "Enter timezone (e.g. +8 for Taiwan, default +9 for Japan)", "+9", 4);
   wm.addParameter(&tzParam);
 
   if (!wm.autoConnect("JJY-Setup")) {
