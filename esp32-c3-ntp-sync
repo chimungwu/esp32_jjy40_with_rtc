@@ -47,7 +47,7 @@ const char* ssid     = "SSID";        // Replace with your Wi-Fi SSID
 const char* password = "PASSWORD";  // Replace with your Wi-Fi password
 
 // === Time Sync Status ===
-bool ntpSynced       = true;          // Set to true if NTP sync succeeds
+bool ntpSynced       = false;          // Set to true if NTP sync succeeds
 unsigned long lastBlink = 0;          // Last LED toggle time
 bool ledState        = false;         // LED on/off flag
 
@@ -55,6 +55,7 @@ bool ledState        = false;         // LED on/off flag
 #define TIMEZONE_OFFSET_SEC (9 * 3600L)  // UTC+9 (Japan Standard Time)
                                          // Use 8 * 3600L for Taiwan (UTC+8)
 void setup() {
+
   Serial.begin(115200);
   delay(1000);
 
@@ -131,6 +132,7 @@ void delayUntilAlignedRTCWrite() {
 bool hasAligned = false;  // ⏱ 只在第一次對齊
 
 void loop() {
+
   if (ntpSynced) {
     if (!hasAligned) {
       delayUntilAlignedRTCWrite();  // ⏱ 只做一次
@@ -139,6 +141,17 @@ void loop() {
     printAndSendJJY();  // 每分鐘發送時碼
   } else {
     delay(1000); // 若未同步，避免頻繁重試
+  }
+}
+
+void waitForNextSecondAligned() {
+  uint64_t nowMicros = esp_timer_get_time();
+  uint64_t offset = nowMicros % 1000000UL;
+
+  while (offset > 1000) {  // 停到下一個秒起點 ±1ms
+    delayMicroseconds(100);
+    nowMicros = esp_timer_get_time();
+    offset = nowMicros % 1000000UL;
   }
 }
 
@@ -196,36 +209,33 @@ void printAndSendJJY() {
   set_wday(timeInfo.tm_wday);
   set_year(timeInfo.tm_year + 1900 - 2000);
 
-  for (int i = se; i < 60 + sh; i++) {
+for (int i = se; i < 60 + sh; i++) {
 
-    // 狀態燈閃爍（每秒）
-    if (millis() - lastBlink >= 1000) {
-      ledState = !ledState;
-      digitalWrite(STATUS_LED, ledState ? HIGH : LOW);
-      lastBlink = millis();
-    }
+  waitForNextSecondAligned();  // ✅ 每秒發送前先對齊到新的一秒 0ms
 
-    sprintf(t, "%02d ", sg[i]);
-    Serial.print(t);
-    switch (sg[i]) {
-      case -1:
-      case 255:
-        mark();
-        break;
-      case 0:
-        zero();
-        break;
-      case 1:
-        one();
-        break;
-      default:
-        zero();
-        sprintf(t, "%02d  %02d", i, sg[i]);
-        Serial.print("***BUG data ***  ");
-        Serial.println(t);
-        break;
-    }
+  // 狀態燈閃爍（每秒）
+  if (millis() - lastBlink >= 1000) {
+    ledState = !ledState;
+    digitalWrite(STATUS_LED, ledState ? HIGH : LOW);
+    lastBlink = millis();
   }
+
+  sprintf(t, "%02d ", sg[i]);
+  Serial.print(t);
+  if ((i - se + 1) % 10 == 0) Serial.println();
+
+  switch (sg[i]) {
+    case -1:
+    case 255: mark(); break;
+    case 0:    zero(); break;
+    case 1:    one(); break;
+    default:
+      zero();
+      Serial.printf("***BUG data*** sg[%02d] = %02d\n", i, sg[i]);
+      break;
+  }
+}
+
 }
 
 void set_day(int n){
