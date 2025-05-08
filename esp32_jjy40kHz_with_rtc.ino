@@ -46,6 +46,7 @@ char  sg[62];
 
 const char* ssid     = "SSID";  // 請填入WIFI名稱
 const char* password = "PASSWORD";  // 請填入WIFI密碼
+
 uint64_t ntpSyncedMicros = 0;
 time_t ntpSyncedTime = 0;
 
@@ -67,22 +68,33 @@ void setup() {
     Serial.println("⏱️ RTC 已啟動");
   }
 
+WiFi.begin(ssid, password);
+Serial.print("📶 嘗試使用預設 SSID 連線中...");
 
-Serial.println("📶 嘗試透過 WiFiManager 自動連線...");
-Serial.println("🔧 若無法連線，將啟用設定模式：熱點名稱為 JJY_Config");
+unsigned long startAttemptTime = millis();
+while (WiFi.status() != WL_CONNECTED && millis() - startAttemptTime < 10000) {
+  delay(500);
+  Serial.print(".");
+}
 
-WiFiManager wm;
-wm.setDebugOutput(true);    // 顯示 WiFiManager debug 訊息
-wm.setTimeout(60);         // 最多等待 60 秒
-wm.setConnectTimeout(20);     // 連線目標 AP 最多等 20 秒
-
-bool res = wm.autoConnect("JJY_Config");
-
-if (!res) {
-  Serial.println("❌ WiFiManager 連線失敗，請確認設定或進入 fallback 模式");
-} else {
-  Serial.println("✅ WiFiManager 已成功連線 WiFi");
+if (WiFi.status() == WL_CONNECTED) {
+  Serial.println("\n✅ 已成功連線到預設 Wi-Fi");
   digitalWrite(wifiStatusLED, HIGH);
+} else {
+  Serial.println("\n❌ 預設 Wi-Fi 連線失敗，啟用 WiFiManager");
+
+  WiFiManager wm;
+  wm.setDebugOutput(true);
+  wm.setTimeout(60);
+  wm.setConnectTimeout(20);
+
+  bool res = wm.autoConnect("JJY_Config");
+  if (!res) {
+    Serial.println("❌ WiFiManager 連線失敗，請檢查設定");
+  } else {
+    Serial.println("✅ WiFiManager 成功連線");
+    digitalWrite(wifiStatusLED, HIGH);
+  }
 }
 
   bool ntpSuccess = false;
@@ -108,6 +120,9 @@ if (!res) {
           time(&ntpEpoch);
           ntpSyncedMicros = esp_timer_get_time();
           ntpSyncedTime = ntpEpoch;
+
+          // 🔁 僅開機時進行一次「整分鐘」對齊，確保60秒循環乾淨
+          delayUntilAlignedRTCWrite();  // 等待下一個整分鐘起點
 
           RtcDateTime ntpTime(
               timeInfo.tm_year + 1900,
@@ -164,6 +179,25 @@ if (!ntpSuccess) {
   Serial.println("✅ 初始化完成，開始發射計時波訊號");
 }
 
+void delayUntilAlignedRTCWrite() {
+  struct timeval tv;
+  gettimeofday(&tv, NULL);  // 取得目前秒與微秒
+
+  int64_t micros_now = tv.tv_sec * 1000000LL + tv.tv_usec;
+  int64_t micros_next_minute = ((tv.tv_sec / 60) + 1) * 60 * 1000000LL;
+  int64_t delay_us = micros_next_minute - micros_now;
+
+  Serial.printf("⏱ 等待整分鐘對齊：%.3f 秒...\n", delay_us / 1000000.0);
+
+  if (delay_us >= 1000) {
+    delay(delay_us / 1000);                  // 毫秒部分
+    delayMicroseconds(delay_us % 1000);      // 微秒部分
+  } else {
+    delayMicroseconds(delay_us);
+  }
+
+  Serial.println("🎯 已對齊整分鐘起點");
+}
 
 void loop() {
   struct tm timeInfo;
@@ -252,6 +286,11 @@ void printAndSendJJY(struct tm &timeInfo) {
 
     snprintf(t, sizeof(t), "%02d ", sg[i]);
     Serial.print(t);
+
+      // 每 10 個一換行
+    if ((i - se + 1) % 10 == 0) {
+    Serial.println();
+  }
 
     switch (sg[i]) {
       case -1:
