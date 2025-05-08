@@ -47,7 +47,7 @@ const char* ssid     = "SSID";        // Replace with your Wi-Fi SSID
 const char* password = "PASSWORD";  // Replace with your Wi-Fi password
 
 // === Time Sync Status ===
-bool ntpSynced       = false;          // Set to true if NTP sync succeeds
+bool ntpSynced       = true;          // Set to true if NTP sync succeeds
 unsigned long lastBlink = 0;          // Last LED toggle time
 bool ledState        = false;         // LED on/off flag
 
@@ -67,6 +67,7 @@ void setup() {
 
   // 優先使用預設 SSID/PASSWORD 嘗試連線
   Serial.println("📶 嘗試連接預設 WiFi...");
+  WiFi.mode(WIFI_STA);  // 確保使用 Station 模式
   WiFi.begin(ssid, password);
 
   unsigned long startAttemptTime = millis();
@@ -76,26 +77,24 @@ void setup() {
   }
 
   if (WiFi.status() != WL_CONNECTED) {
-    Serial.println("\n⚠️ 預設 WiFi 連線失敗，進入 WiFiManager 模式");
+    Serial.println("\n⚠️ 預設 WiFi 連線失敗，進入 WiFiManager 設定模式");
 
     WiFiManager wm;
-    wm.setTimeout(60); // 最多等待 1 分鐘
-    bool res = wm.autoConnect("JJY-Setup");
+    wm.setTimeout(180);  // 最多等待 3 分鐘
+    bool res = wm.autoConnect("JJY-Setup"); // 建立名稱為 JJY-Setup 的 WiFi 熱點
 
     if (!res) {
-      Serial.println("❌ Failed to connect and timeout occurred.");
+      Serial.println("❌ WiFiManager 連線失敗，無法進行 NTP 同步");
       ntpSynced = false;
       return;
+    } else {
+      Serial.println("📶 WiFiManager 成功連線");
     }
-
-    Serial.println("📶 WiFi connected via Captive Portal.");
   } else {
     Serial.println("\n✅ 成功連上預設 WiFi");
   }
 
-  digitalWrite(STATUS_LED, HIGH);
-
-  // ⭐ 不論哪種方式連上 WiFi，都進行 NTP 同步
+  // 設定 NTP 時區
   configTime(TIMEZONE_OFFSET_SEC, 0, 
              "time.stdtime.gov.tw", "time.google.com", "ntp.twnic.tw");
 
@@ -127,7 +126,6 @@ void setup() {
   }
 }
 
-
 void delayUntilAlignedRTCWrite() {
   struct timeval tv;
   gettimeofday(&tv, NULL);
@@ -150,7 +148,6 @@ void delayUntilAlignedRTCWrite() {
 bool hasAligned = false;  // ⏱ 只在第一次對齊
 
 void loop() {
-
   if (ntpSynced) {
     if (!hasAligned) {
       delayUntilAlignedRTCWrite();  // ⏱ 只做一次
@@ -159,17 +156,6 @@ void loop() {
     printAndSendJJY();  // 每分鐘發送時碼
   } else {
     delay(1000); // 若未同步，避免頻繁重試
-  }
-}
-
-void waitForNextSecondAligned() {
-  uint64_t nowMicros = esp_timer_get_time();
-  uint64_t offset = nowMicros % 1000000UL;
-
-  while (offset > 1000) {  // 停到下一個秒起點 ±1ms
-    delayMicroseconds(100);
-    nowMicros = esp_timer_get_time();
-    offset = nowMicros % 1000000UL;
   }
 }
 
@@ -227,33 +213,36 @@ void printAndSendJJY() {
   set_wday(timeInfo.tm_wday);
   set_year(timeInfo.tm_year + 1900 - 2000);
 
-for (int i = se; i < 60 + sh; i++) {
+  for (int i = se; i < 60 + sh; i++) {
 
-  waitForNextSecondAligned();  // ✅ 每秒發送前先對齊到新的一秒 0ms
+    // 狀態燈閃爍（每秒）
+    if (millis() - lastBlink >= 1000) {
+      ledState = !ledState;
+      digitalWrite(STATUS_LED, ledState ? HIGH : LOW);
+      lastBlink = millis();
+    }
 
-  // 狀態燈閃爍（每秒）
-  if (millis() - lastBlink >= 1000) {
-    ledState = !ledState;
-    digitalWrite(STATUS_LED, ledState ? HIGH : LOW);
-    lastBlink = millis();
+    sprintf(t, "%02d ", sg[i]);
+    Serial.print(t);
+    switch (sg[i]) {
+      case -1:
+      case 255:
+        mark();
+        break;
+      case 0:
+        zero();
+        break;
+      case 1:
+        one();
+        break;
+      default:
+        zero();
+        sprintf(t, "%02d  %02d", i, sg[i]);
+        Serial.print("***BUG data ***  ");
+        Serial.println(t);
+        break;
+    }
   }
-
-  sprintf(t, "%02d ", sg[i]);
-  Serial.print(t);
-  if ((i - se + 1) % 10 == 0) Serial.println();
-
-  switch (sg[i]) {
-    case -1:
-    case 255: mark(); break;
-    case 0:    zero(); break;
-    case 1:    one(); break;
-    default:
-      zero();
-      Serial.printf("***BUG data*** sg[%02d] = %02d\n", i, sg[i]);
-      break;
-  }
-}
-
 }
 
 void set_day(int n){
