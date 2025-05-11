@@ -1,74 +1,95 @@
-# ESP32 JJY 40kHz Transmitter with RTC Backup (Modified Version)
+# File name：esp32_jjy40kHz_with_rtcDS3231.ino
+# ESP32 JJY 40kHz Transmitter with DS3231 RTC & LCD Display (ver.0.12)
 
-> A modified and extended version of the original ESP32 JJY simulator by Nash (Shuji009), now with DS1302 RTC fallback and future expandability.
+> A robust and extended version of the original ESP32 JJY simulator, upgraded with DS3231 RTC backup, LCD1602 display, WiFiManager config UI, and microsecond-aligned NTP time sync.
 
-This project simulates a JJY (Japanese Standard Time) 40kHz radio wave transmitter using an ESP32. It extends the original implementation by adding a DS1302 Real-Time Clock (RTC) module to maintain accurate time even when no internet connection is available.
+This project simulates a JJY 40kHz radio transmitter using ESP32, with precise time synchronization via NTP and fallback to DS3231 RTC. A 16x2 LCD shows current time and transmission status. Configuration is made easy using WiFiManager for timezone and WiFi credentials.
 
 ---
 
 ## 🔧 Features
 
 - 🛰️ **WiFi + NTP Time Synchronization**  
-  On startup, the ESP32 tries up to 30s to connect to WiFi and synchronize time via NTP.
+  On boot, the device attempts to connect to known WiFi and sync with NTP servers (Taiwan, Google, Pool). Microsecond-level precision is applied for second alignment.
 
-- 🕒 **RTC Fallback with DS1302**  
-  If NTP sync fails, the system falls back to the onboard DS1302 RTC to provide time continuity.
+- 🕒 **RTC Fallback with DS3231**  
+  If WiFi/NTP fails, the system reads from DS3231 RTC to continue accurate timekeeping.
 
 - 📶 **JJY 40kHz Signal Generation**  
-  Uses GPIO26 to generate JJY signals via PWM at 40kHz, with pulse width encoding to transmit binary time codes.
+  Uses GPIO26 with LEDC PWM output at 40kHz to transmit JJY standard time codes encoded in pulse width.
 
-- 🔘 **Planned: Button Control for TX**  
-  - Short press: Start transmission for 5 minutes  
-  - Long press: Cancel transmission
+- ⚙️ **WiFiManager Web Configuration**  
+  Auto-starts "JJY_Config" AP if WiFi is not available. Users can set WiFi and timezone (+8, +9, etc.) via web page.
 
-- 📺 **Planned: LCD1602 Display**  
-  - Top row: Current time  
-  - Bottom row: TX status and sync source (NTP or RTC)
+- 📺 **LCD1602 I2C Display Support**  
+  - Top row: Taiwan time (fixed UTC+8) + sync source (NTP or RTC)  
+  - Bottom row: Transmit time + current timezone
+
+- 🧠 **Error Handling & Logging**  
+  Serial monitor displays full debug info: NTP retries, RTC time validity, sg[] bit values, fallback logic, and more.
 
 ---
 
 ## 🖥️ Hardware Requirements
 
-- ESP32-WROOM board  
-- DS1302 RTC module with battery  
-- 220Ω resistor + 40cm loop antenna  
-- (Optional) LCD1602 with I2C  
-- (Optional) Momentary push button
+| Component        | Notes                                 |
+|------------------|----------------------------------------|
+| ESP32 Dev Board  | e.g., NodeMCU-32S or DevKit v1         |
+| DS3231 RTC       | I²C on GPIO17 (SDA) and GPIO16 (SCL)   |
+| LCD1602 Display  | I²C on GPIO21 (SDA) and GPIO22 (SCL)   |
+| Loop Antenna     | Connected via 220Ω to GPIO26 and GND   |
+| (Optional) LED   | GPIO2 lights up when WiFi is connected |
 
 ---
 
-## 🧑‍💻 Authors
+## 🗂️ Pin Assignments
 
-- **Original version** by Nash (Shuji009), 2024/05/16
-- https://github.com/shuji009/ESP32_jjy_40kHz
-- **Modified and extended** by **chimungwu**, 2025/05/06
-
----
-
-## 📜 License
-
-MIT License (if applicable)
-
----
-
-## 📡 JJY Signal Format (Simplified)
-
-| Type     | Pulse Width | Meaning       |
-|----------|-------------|----------------|
-| `-1` / `255` | 0.2 sec     | Mark (minute start) |
-| `0`        | 0.8 sec     | Bit value 0   |
-| `1`        | 0.5 sec     | Bit value 1   |
+| Purpose          | GPIO | Description                  |
+|------------------|------|------------------------------|
+| PWM Output (TX)  | 26   | 40kHz signal to antenna       |
+| WiFi Status LED  | 2    | Lights when WiFi connected    |
+| LCD I2C SDA/SCL  | 21/22| Default I2C port (Wire)       |
+| RTC I2C SDA/SCL  | 17/16| Separate I2C port (I2C1)      |
 
 ---
 
 ## 🚀 How to Use
 
-1. Connect DS1302 RTC to GPIO 13 (IO), 14 (SCLK), 15 (RST)  
-2. Connect loop antenna to GPIO 26 via 220Ω resistor to GND  
-3. Edit `ssid` and `password` in the sketch to match your WiFi credentials  
-4. Upload the sketch using Arduino IDE or PlatformIO  
-5. Monitor output via Serial Monitor at 115200 baud  
+1. Connect DS3231 RTC and LCD1602 as described above  
+2. Connect antenna (loop wire) to GPIO26 via 220Ω to GND  
+3. Upload the sketch via Arduino IDE (baud rate: 115200)  
+4. On first boot, the device will enter "JJY_Config" AP mode  
+5. Use browser to connect, configure WiFi & timezone (e.g., +8 for Taiwan)  
+6. Once configured, it will auto sync time and begin transmission  
 
 ---
 
-> This project provides a reliable JJY simulator platform for experiments and timekeeping, with planned expansion for user interface and manual control.
+## 📡 JJY Signal Format (Simplified)
+
+| Type       | Pulse Width | Meaning                  |
+|------------|-------------|---------------------------|
+| `-1` / `255` | 0.2 sec     | Minute marker             |
+| `0`        | 0.8 sec     | Bit 0                    |
+| `1`        | 0.5 sec     | Bit 1                    |
+
+---
+
+## 📦 Future Plans
+
+- ⏳ Minute offset support (e.g., +8:15)  
+- 🔘 Button-controlled transmission mode  
+- 🔁 BPC (China 68.5kHz) mode toggle
+
+---
+
+## 👨‍💻 Authors
+
+- **Original version** by Nash (Shuji009), 2024/05/16  
+  https://github.com/shuji009/ESP32_jjy_40kHz  
+- **Modified and enhanced** by **chimungwu**, 2025/05/10  
+
+---
+
+## 📜 License
+
+MIT License (unless otherwise noted)
