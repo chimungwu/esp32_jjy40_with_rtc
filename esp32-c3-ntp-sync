@@ -1,11 +1,18 @@
 /*
-  JJY Transmitter (ver.0.11) - ESP32-C3 SuperMini Edition
-  ---------------------------------------------------------
+  JJY Transmitter (ver.0.11) - ESP32-C3 SuperMini / NodeMCU-32S Edition
+  ---------------------------------------------------------------------
   Based on: ver.0.10 (2024/05/16 by Nash Shuji009)
   Modified by: chimungwu (2025/05/08)
-  Target Board: ESP32-C3 SuperMini
+
+  Target Board: ESP32-C3 SuperMini（預設設定）
   JJY Output: GPIO6 (PWM 40kHz)
-  Status LED: GPIO8 (關閉：未發送，閃爍：發送中)
+  Status LED: GPIO8（關閉：未發送，閃爍：發送中）
+
+  ✅ 若使用 ESP32 NodeMCU-32S，請依下列方式修改腳位與狀態顯示：
+     - 將 PWM 輸出腳位改為 GPIO26： const int ledPin = 26;
+     - 將狀態 LED 腳位改為 GPIO2： #define STATUS_LED 2，或是依需求修改
+  ✅JJY 發波線圈：接至 GPIO6，並串聯一顆 220Ω 電阻後再接到線圈。
+  ✅狀態 LED：可使用板載 LED（GPIO2），或外接 LED（串聯 220Ω 後接 GND）。
 
   == 功能說明 ==
   ✅ 每次開機都進入 WiFiManager「JJY-Setup」設定模式，讓使用者設定 Wi-Fi 與時區
@@ -15,8 +22,8 @@
   ✅ 支援閏秒與錯誤值檢查，發送結束後序列埠會輸出傳送內容
 
   == 指示燈狀態 ==
-  - 閃爍：尚未完成 NTP 對時
-  - 常亮：NTP 對時成功，已開始傳送 JJY 訊號
+  - 快速閃爍：尚未完成 NTP 對時
+  - 每秒閃爍1次：NTP 對時成功，已開始傳送 JJY 訊號
 
   == 相依函式庫 ==
   - WiFiManager by tzapu: https://github.com/tzapu/WiFiManager
@@ -25,6 +32,7 @@
   📌 時區預設值為 UTC+9（日本時間）
   ➜ 若需改為台灣時間，設定頁請輸入 +8
 */
+
 
 #include <Arduino.h>
 #include <driver/ledc.h>
@@ -140,13 +148,11 @@ bool hasAligned = false;  // ⏱ 只在第一次對齊
 void loop() {
   // 狀態燈邏輯：同步成功 → 常亮；未同步 → 每秒閃爍
   if (!ntpSynced) {
-    if (millis() - lastBlink >= 1000) {
+    if (millis() - lastBlink >= 500) {
       ledState = !ledState;
       digitalWrite(STATUS_LED, ledState ? HIGH : LOW);
       lastBlink = millis();
     }
-  } else {
-    digitalWrite(STATUS_LED, HIGH);
   }
 
   // 時碼發送邏輯
