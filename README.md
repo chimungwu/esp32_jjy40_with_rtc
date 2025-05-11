@@ -1,9 +1,9 @@
-# File name：esp32_jjy40kHz_with_rtcDS3231.ino
-# ESP32 JJY 40kHz Transmitter with DS3231 RTC & LCD Display (ver.0.12)
+# esp32_jjy40kHz_with_rtcDS3231.ino  
+## ESP32 JJY 40kHz Transmitter with DS3231 RTC & LCD Display (ver.0.12)
 
-> A robust and extended version of the original ESP32 JJY simulator, upgraded with DS3231 RTC backup, LCD1602 display, WiFiManager config UI, and microsecond-aligned NTP time sync.
+> A robust and extended version of the original ESP32 JJY simulator, upgraded with DS3231 RTC backup, LCD1602 display, WiFiManager config UI, microsecond-aligned NTP time sync, and customizable auto-resync interval.
 
-This project simulates a JJY 40kHz radio transmitter using ESP32, with precise time synchronization via NTP and fallback to DS3231 RTC. A 16x2 LCD shows current time and transmission status. Configuration is made easy using WiFiManager for timezone and WiFi credentials.
+This project simulates a JJY 40kHz radio transmitter using ESP32, with precise time synchronization via NTP and fallback to DS3231 RTC. A 16x2 LCD shows current time and transmission status. Configuration is made easy using WiFiManager for timezone, WiFi credentials, and NTP resync interval.
 
 ---
 
@@ -12,21 +12,24 @@ This project simulates a JJY 40kHz radio transmitter using ESP32, with precise t
 - 🛰️ **WiFi + NTP Time Synchronization**  
   On boot, the device attempts to connect to known WiFi and sync with NTP servers (Taiwan, Google, Pool). Microsecond-level precision is applied for second alignment.
 
+- 🔁 **Auto NTP Resync with RTC Fallback**  
+  A configurable interval (default 6 hours) triggers periodic resynchronization. If WiFi/NTP fails, the system automatically reverts to DS3231 RTC for stable timekeeping.
+
 - 🕒 **RTC Fallback with DS3231**  
-  If WiFi/NTP fails, the system reads from DS3231 RTC to continue accurate timekeeping.
+  Ensures continued operation even in offline environments using RTC hardware time.
+
+- ⚙️ **WiFiManager Web Configuration**  
+  Auto-starts "JJY_Config" AP if WiFi is not available. Users can set WiFi, timezone (+8, +9, etc.), and resync interval (in hours) via web page.
 
 - 📶 **JJY 40kHz Signal Generation**  
   Uses GPIO26 with LEDC PWM output at 40kHz to transmit JJY standard time codes encoded in pulse width.
 
-- ⚙️ **WiFiManager Web Configuration**  
-  Auto-starts "JJY_Config" AP if WiFi is not available. Users can set WiFi and timezone (+8, +9, etc.) via web page.
-
 - 📺 **LCD1602 I2C Display Support**  
   - Top row: Taiwan time (fixed UTC+8) + sync source (NTP or RTC)  
-  - Bottom row: Transmit time + current timezone
+  - Bottom row: Transmit time + current timezone setting
 
 - 🧠 **Error Handling & Logging**  
-  Serial monitor displays full debug info: NTP retries, RTC time validity, sg[] bit values, fallback logic, and more.
+  Serial monitor provides detailed debug output: NTP retries, RTC validity, sg[] integrity, fallback events, and more.
 
 ---
 
@@ -59,18 +62,18 @@ This project simulates a JJY 40kHz radio transmitter using ESP32, with precise t
 2. Connect antenna (loop wire) to GPIO26 via 220Ω to GND  
 3. Upload the sketch via Arduino IDE (baud rate: 115200)  
 4. On first boot, the device will enter "JJY_Config" AP mode  
-5. Use browser to connect, configure WiFi & timezone (e.g., +8 for Taiwan)  
+5. Use browser to connect, configure WiFi, timezone (e.g., +8 for Taiwan), and optional resync interval (in hours)  
 6. Once configured, it will auto sync time and begin transmission  
 
 ---
 
 ## 📡 JJY Signal Format (Simplified)
 
-| Type       | Pulse Width | Meaning                  |
-|------------|-------------|---------------------------|
-| `-1` / `255` | 0.2 sec     | Minute marker             |
-| `0`        | 0.8 sec     | Bit 0                    |
-| `1`        | 0.5 sec     | Bit 1                    |
+| Type         | Pulse Width | Meaning        |
+|--------------|-------------|----------------|
+| `-1` / `255` | 0.2 sec     | Minute marker  |
+| `0`          | 0.8 sec     | Bit 0          |
+| `1`          | 0.5 sec     | Bit 1          |
 
 ---
 
