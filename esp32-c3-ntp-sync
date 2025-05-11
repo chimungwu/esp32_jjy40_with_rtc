@@ -1,38 +1,38 @@
-/*
-  JJY Transmitter (ver.0.11) - ESP32-C3 SuperMini / NodeMCU-32S Edition
-  ---------------------------------------------------------------------
-  Based on: ver.0.10 (2024/05/16 by Nash Shuji009)
-  Modified by: chimungwu (2025/05/08)
-
-  Target Board: ESP32-C3 SuperMini（預設設定）
-  JJY Output: GPIO6 (PWM 40kHz)
-  Status LED: GPIO8（關閉：未發送，閃爍：發送中）
-
-  ✅ 若使用 ESP32 NodeMCU-32S，請依下列方式修改腳位與狀態顯示：
-     - 將 PWM 輸出腳位改為 GPIO26： const int ledPin = 26;
-     - 將狀態 LED 腳位改為 GPIO2： #define STATUS_LED 2，或是依需求修改
-  ✅JJY 發波線圈：接至 GPIO6，並串聯一顆 220Ω 電阻後再接到線圈。
-  ✅狀態 LED：可使用板載 LED（GPIO2），或外接 LED（串聯 220Ω 後接 GND）。
-
-  == 功能說明 ==
-  ✅ 每次開機都進入 WiFiManager「JJY-Setup」設定模式，讓使用者設定 Wi-Fi 與時區
-  ✅ 使用者可在設定頁輸入時區（格式如 +8 或 +9），支援自訂 NTP 時區校時
-  ✅ 成功連線 Wi-Fi 並設定後，會自動同步 NTP 並開始發送模擬 JJY 時碼
-  ✅ 發波時間與日本 JJY 電波對齊（整分鐘開始），每秒傳送一次時間碼
-  ✅ 支援閏秒與錯誤值檢查，發送結束後序列埠會輸出傳送內容
-
-  == 指示燈狀態 ==
-  - 快速閃爍：尚未完成 NTP 對時
-  - 每秒閃爍1次：NTP 對時成功，已開始傳送 JJY 訊號
-
-  == 相依函式庫 ==
-  - WiFiManager by tzapu: https://github.com/tzapu/WiFiManager
-  - Preferences（儲存時區）
-
-  📌 時區預設值為 UTC+9（日本時間）
-  ➜ 若需改為台灣時間，設定頁請輸入 +8
-*/
-
+ /*
+    JJY Transmitter (ver.0.11) - ESP32-C3 SuperMini / NodeMCU-32S Edition
+    ---------------------------------------------------------------------
+    Based on: ver.0.10 (2024/05/16 by Nash Shuji009)
+    Modified by: chimungwu (2025/05/12)
+  
+    Target Board: ESP32-C3 SuperMini（預設設定）
+    JJY Output: GPIO6 (PWM 40kHz)
+    Status LED: GPIO8（關閉：未發送，閃爍：發送中）
+  
+    ✅ 若使用 ESP32 NodeMCU-32S，請依下列方式修改腳位與狀態顯示：
+       - 將 PWM 輸出腳位改為 GPIO26： const int ledPin = 26;
+       - 將狀態 LED 腳位改為 GPIO2： #define STATUS_LED 2，或是依需求修改
+    ✅JJY 發波線圈：接至 GPIO6，並串聯一顆 220Ω 電阻後再接到線圈。
+    ✅狀態 LED：可使用板載 LED（GPIO2），或外接 LED（串聯 220Ω 後接 GND）。
+  
+    == 功能說明 ==
+    ✅ 每次開機都進入 WiFiManager「JJY-Setup」設定模式，讓使用者設定 Wi-Fi 與時區
+    ✅ 使用者可在設定頁輸入時區（格式如 +8 或 +9），支援自訂 NTP 時區校時
+    ✅ 成功連線 Wi-Fi 並設定後，會自動同步 NTP 並開始發送模擬 JJY 時碼
+    ✅ 發波時間與日本 JJY 電波對齊（整分鐘開始），每秒傳送一次時間碼
+    ✅ 支援閏秒與錯誤值檢查，發送結束後序列埠會輸出傳送內容
+  
+    == 指示燈狀態 ==
+    - 快速閃爍：開機快速閃爍10秒
+    - 指示燈恆亮：等待WIFI設定，若無設定會等待30秒後連入之前AP
+    - 每秒閃爍1次：NTP 對時成功，已開始傳送 JJY 訊號
+  
+    == 相依函式庫 ==
+    - WiFiManager by tzapu: https://github.com/tzapu/WiFiManager
+    - Preferences（儲存時區）
+  
+    📌 時區預設值為 UTC+9（日本時間）
+    ➜ 若需改為台灣時間，設定頁請輸入 +8
+  */
 
 #include <Arduino.h>
 #include <driver/ledc.h>
@@ -42,7 +42,7 @@
 
 // === Hardware Settings ===
 const int ledChannel = 0;  // PWM channel for JJY signal output
-const int ledPin     = 6;  // PWM output pin (connected to JJY antenna via GPIO6)
+const int ledPin     = 7;  // PWM output pin (connected to JJY antenna via GPIO6)
 #define STATUS_LED    8    // Onboard status LED (GPIO8 on ESP32-C3 SuperMini)
 
 // === JJY Signal Variables ===
@@ -53,7 +53,7 @@ char SU1, LS1, LS2;
 char sg[60];
 
 // === Time Sync Status ===
-bool ntpSynced       = true;
+bool ntpSynced       = false;
 unsigned long lastBlink = 0;
 bool ledState        = false;
 
@@ -73,18 +73,52 @@ void setup() {
   ledcSetup(ledChannel, 40000, 8);
   ledcAttachPin(ledPin, ledChannel);
 
+// 一開機先閃爍 10 秒
+unsigned long blinkStart = millis();
+while (millis() - blinkStart < 10000) {
+  if (millis() - lastBlink >= 300) {
+    ledState = !ledState;
+    digitalWrite(STATUS_LED, ledState ? HIGH : LOW);
+    lastBlink = millis();
+  }
+  delay(10);
+}
+
+// 閃完後恆亮
+
+  digitalWrite(STATUS_LED, HIGH);
+  
   WiFiManager wm;
-  wm.resetSettings();  // <== 強制清除
+
   WiFiManagerParameter tzParam("tz", "Enter timezone (e.g. +8 for Taiwan, default +9 for Japan)", "+9", 4);
   wm.addParameter(&tzParam);
+  wm.setConfigPortalTimeout(30);  // 最多等待 30 秒設定
+  wm.startConfigPortal("JJY-Setup");  // 啟動設定介面（非阻塞）
+  unsigned long configStart = millis();
 
-  if (!wm.autoConnect("JJY-Setup")) {
-    Serial.println("\n❌ WiFiManager 連線失敗，無法進行 NTP 同步");
+  while (!wm.getWiFiIsSaved() && (millis() - configStart < 30000)) {
+    wm.process();       // 非阻塞處理 WiFiManager
+    delay(100);
+  }
+  
+  Serial.println("🔧 啟動 WiFi 設定介面中...");
+  // 時間到或設定完成，關閉設定頁並嘗試連線記憶的 WiFi
+WiFi.mode(WIFI_STA);
+WiFi.begin();
+
+unsigned long connectStart = millis();
+while (WiFi.status() != WL_CONNECTED && millis() - connectStart < 10000) {
+  delay(500);
+  Serial.print(".");
+}
+
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("\n❌ WiFi 設定逾時，無法連線");
     ntpSynced = false;
     return;
   }
 
-  Serial.println("\n📶 WiFiManager 成功連線");
+  Serial.println("\n📶 WiFi 連線成功");
 
   tzString = String(tzParam.getValue());
   prefs.begin("jjy", false);
@@ -101,27 +135,32 @@ void setup() {
   struct tm timeInfo;
   int retries = 0;
 
-  Serial.print("⏳ Synchronizing time via NTP");
+  Serial.print("⏳ 正在透過 NTP 同步時間");
   while (!getLocalTime(&timeInfo) && retries < 10) {
-    delay(500);
-    Serial.print(".");
+    if (millis() - lastBlink >= 300) {
+      ledState = !ledState;
+      digitalWrite(STATUS_LED, ledState ? HIGH : LOW);
+      lastBlink = millis();
+    }
+    delay(10);
     retries++;
   }
 
   if (getLocalTime(&timeInfo)) {
     ntpSynced = true;
-    Serial.println("\n✅ NTP time synchronized successfully.");
+    Serial.println("\n✅ NTP 同步成功");
 
     char timeStr[64];
-    sprintf(timeStr, "🕒 Current Time: %04d-%02d-%02d %02d:%02d:%02d",
+    sprintf(timeStr, "🕒 當前時間: %04d-%02d-%02d %02d:%02d:%02d",
             timeInfo.tm_year + 1900, timeInfo.tm_mon + 1, timeInfo.tm_mday,
             timeInfo.tm_hour, timeInfo.tm_min, timeInfo.tm_sec);
     Serial.println(timeStr);
   } else {
-    Serial.println("\n❌ Failed to synchronize time via NTP.");
+    Serial.println("\n❌ NTP 同步失敗");
     ntpSynced = false;
   }
 }
+
 
 
 void delayUntilAlignedRTCWrite() {
@@ -146,26 +185,17 @@ void delayUntilAlignedRTCWrite() {
 bool hasAligned = false;  // ⏱ 只在第一次對齊
 
 void loop() {
-  // 狀態燈邏輯：同步成功 → 常亮；未同步 → 每秒閃爍
-  if (!ntpSynced) {
-    if (millis() - lastBlink >= 500) {
-      ledState = !ledState;
-      digitalWrite(STATUS_LED, ledState ? HIGH : LOW);
-      lastBlink = millis();
-    }
-  }
-
-  // 時碼發送邏輯
   if (ntpSynced) {
     if (!hasAligned) {
-      delayUntilAlignedRTCWrite();  // ⏱ 第一次進入時對齊整分鐘
+      delayUntilAlignedRTCWrite();
       hasAligned = true;
     }
-    printAndSendJJY();  // 發送完整一分鐘的 JJY 時碼
+    printAndSendJJY();
   } else {
-    delay(1000);  // 尚未同步時，延遲等待 WiFi/NTP 重啟
+    delay(1000);  // 無同步情況等待重新對時
   }
 }
+
 
 
 void set_year(int n){
