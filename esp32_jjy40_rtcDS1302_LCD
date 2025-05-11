@@ -1,105 +1,157 @@
-//   由 Chimung 依據 ver.0.1 (2024/05/16 by Nash Shuji009) 改寫與強化，版本 ver.0.12（2025/05/08）
+// esp32_jjy40kHz_with_rtcDS3231.ino
+//   由 Chimung 根據 ver.0.1（2024/05/16 by Nash Shuji009）改寫與強化，版本 ver.0.12（2025/05/10）
 //
-// 📡 ESP32 JJY 40kHz 電波時計模擬器，支援 RTC 備援、NTP 校時、LCD 顯示與 WiFiManager 設定
+// 📡 ESP32 JJY 40kHz 電波時計發射器模擬器，支援 NTP 對時、RTC 備援、LCD 顯示與 WiFiManager 設定
 //
 // 🛠️ 功能特色：
-//   - 透過 GPIO26 輸出 40kHz PWM 訊號，模擬日本 JJY 電波時碼
-//   - 開機時自動透過 WiFi 連線並同步 NTP 時間，支援微秒級對齊
-//   - 可使用 DS1302 RTC 模組作為離線備援時鐘
-//   - 當 WiFi 或 NTP 同步失敗時，自動切換使用 RTC 時間進行發波
-//   - 整合 WiFiManager，若無已知 WiFi，會啟用 AP 模式（SSID: JJY-config）進入設定介面
-//   - 使用者可在設定頁輸入時區（如 +8、+9、-5），會自動套用於系統時間校正
-//   - LCD1602 顯示器每秒顯示目前台灣時間（固定 UTC+8）與系統實際發送時間與來源（NTP 或 RTC）
-//   - 若 WiFi 連線失敗，LCD 會提示使用者連接 AP 設定 WiFi（Please setup WiFi / SSID: JJY-config）
-//   - 擴充 sg[] 時碼陣列並加入值檢查防呆機制，避免溢位錯誤
-//   - Serial 序列埠提供清晰的除錯訊息：WiFi 狀態、RTC 狀態、同步與發波流程
+//   - 使用 GPIO26 輸出 40kHz PWM 訊號，模擬日本 JJY 標準電波時碼
+//   - 開機時自動透過 WiFi 連線並同步 NTP 時間，支援微秒級整秒對齊
+//   - 支援 DS3231 RTC 模組作為離線備援時鐘，與 LCD 使用不同 I²C 控制器
+//   - 若 WiFi 或 NTP 同步失敗，自動 fallback 為 RTC 模組時間繼續運作
+//   - 整合 WiFiManager：若無已知 WiFi，自動啟用 AP 模式（SSID: JJY_Config）進入設定畫面
+//   - 使用者可透過 WiFiManager 自訂時區（如 +8 台灣、+9 日本）及多久重新校時(hr)，並套用至系統
+//   - LCD1602 螢幕每秒顯示台灣時間、實際發送時間、來源（NTP 或 RTC）、與目前時區設定
+//   - sg[] 時碼陣列加入錯誤檢查防呆機制，避免錯誤值導致時碼異常
+//   - Serial 輸出詳細除錯資訊：包含 WiFi 狀態、RTC 狀態、對時過程與每秒發波內容
 //
 // 🧷 硬體接線說明：
-//   - 發波線圈（天線）：GPIO26 → 220Ω 電阻 → 單芯線圈 → GND
-//   - RTC 模組（DS1302）：IO=GPIO13, SCLK=GPIO14, RST=GPIO15
-//   - WiFi 連線狀態 LED（選配）：GPIO2（連上 WiFi 時點亮）
-//   - LCD1602（I2C 位址 0x27）：SDA/SCL 接至預設 I2C 腳位（ESP32 Nodemcu32s: SDA=21, SCL=22 或依開發板而定）
-
+//   - 發波線圈（JJY 天線）：GPIO26 → 220Ω → 線圈 → GND
+//   - RTC（DS3231 模組）：SDA=GPIO17、SCL=GPIO16（獨立 I²C 控制器 I2C_RTC）
+//   - LCD（I²C 介面）：SDA=GPIO21、SCL=GPIO22（使用預設 Wire）
+//   - WiFi 狀態指示燈（選配）：GPIO2（成功連上 WiFi 時點亮）
 
 #include <Arduino.h>
-#include <driver/ledc.h>
-#include <WiFi.h>
-#include <ThreeWire.h>
-#include <RtcDS1302.h>
-#include <WiFiManager.h>  // 加在最前面
+#include <driver/ledc.h>         // ESP32 的 LEDC PWM 控制器，用於產生 40kHz
+#include <WiFi.h>                // WiFi 連線功能
+#include <RtcDS3231.h>          // RTC DS3231 時鐘模組函式庫
+#include <WiFiManager.h>        // 自動 WiFi 管理與設定頁面
+#include <Wire.h>               // I²C 通訊函式庫（用於 LCD）
+#include <LiquidCrystal_I2C.h>  // LCD1602 I²C 顯示模組
 
-// RTC 模組腳位 (依你實際接法調整)
-ThreeWire myWire(13, 14, 15); // IO, SCLK, RST
-RtcDS1302<ThreeWire> rtc(myWire);
+// LCD 螢幕初始化（預設位址 0x27，16x2 字元）
+LiquidCrystal_I2C lcd(0x27, 16, 2); 
 
-// UTC時區設定(日本+9，台灣+8)
-const long timeZoneOffset = 9 * 3600L;  
+// RTC 使用獨立 I²C 控制器 1，對應腳位為 GPIO17（SDA）與 GPIO16（SCL）
+TwoWire I2C_RTC(1);  
+RtcDS3231<TwoWire> rtc(I2C_RTC);  // 以 I2C_RTC 連接 DS3231
 
-// 硬體設定
-const int ledChannel = 0;          // LEDC PWM 通道 0，用於產生 40kHz 輸出至 JJY 天線
-const int ledPin = 26;             // 輸出 JJY 信號的 GPIO 腳位，接至天線（建議串接 220Ω）
-const int wifiStatusLED = 2;       // WiFi 狀態指示燈，使用內建的 GPIO2，成功連線後點亮
+// 預設時區（以秒為單位）：日本 +9 小時，台灣 +8 請於 WiFiManager 自訂
+long timeZoneOffset = 9 * 3600L;
 
-char P0,P1,P2,P3,P4,P5;
-const char M = P0 = P1 = P2 = P3 = P4 = P5 = -1;
-char PA1,PA2, SU1,  LS1,LS2;
+// PWM 與狀態燈相關腳位設定
+const int ledChannel = 0;        // PWM 通道（用於輸出 40kHz）
+const int ledPin = 26;           // JJY 訊號輸出腳位（建議接 220Ω 電阻）
+const int wifiStatusLED = 2;     // WiFi 連線狀態指示燈（GPIO2，連線成功時點亮）
 
-char  sg[62];
-// sg[] 為 60 秒 JJY 時碼資料陣列（sg[0]~sg[59]），另含 sg[60], sg[61] 安全邊界
+// JJY 時碼所需的暫存變數
+char P0, P1, P2, P3, P4, P5;
+const char M = P0 = P1 = P2 = P3 = P4 = P5 = -1;  // JJY 中代表「標記秒」的特殊值 -1
 
-const char* ssid     = "SSID";  // 請填入WIFI名稱
-const char* password = "PASSWORD";  // 請填入WIFI密碼
+char PA1, PA2, SU1, LS1, LS2;    // 奇偶檢查位與閏秒旗標等
 
-uint64_t ntpSyncedMicros = 0;
-time_t ntpSyncedTime = 0;
+// JJY 時碼儲存陣列 sg[0~59] 為每秒資料，60~61 為安全緩衝用
+char sg[62];
+
+// NTP 精準對時後的時間基準
+uint64_t ntpSyncedMicros = 0;    // 紀錄對時時的微秒時間
+time_t ntpSyncedTime = 0;        // 對時時對應的 UTC 秒數
+
+//自動重新對時機制
+unsigned long lastSyncMillis = 0;
+int autoSyncHour = 6;  // 預設每 6 小時重新對時
+unsigned long syncInterval = 6UL * 60UL * 60UL * 1000UL;
 
 void setup() {
+  // ✅ 初始化 RTC（DS3231）使用獨立 I²C 線（GPIO17 / GPIO16）
+  I2C_RTC.begin(17, 16);  
+  rtc.Begin();
+
+  // ✅ 初始化 LCD 顯示器
+  Wire.begin(21, 22);     // LCD 用預設的 Wire（I2C0）
+  lcd.begin();        
+  lcd.backlight();    
+  lcd.clear();        
+  lcd.setCursor(0, 0);
+  lcd.print("JJY TX Booting...");
+
+  // ✅ 設定 WiFi 狀態燈腳位
   pinMode(wifiStatusLED, OUTPUT);
-  digitalWrite(wifiStatusLED, LOW);  // 預設熄滅
+  digitalWrite(wifiStatusLED, LOW);  // 預設關閉
+
+  // ✅ 啟動序列埠除錯輸出
   Serial.begin(115200);
   delay(100);
   Serial.println("🟢 setup 開始");
 
-  // 初始化 RTC
-  rtc.Begin();
-  if (rtc.GetIsWriteProtected()) {
-    rtc.SetIsWriteProtected(false);
-    Serial.println("🔓 RTC 寫入保護已解除");
+  // ✅ 嘗試自動連接預設 WiFi（SSID 與密碼）
+  WiFi.begin(ssid, password);
+  Serial.print("📶 嘗試使用預設 SSID 連線中...");
+
+  // 最多等待 10 秒
+  unsigned long startAttemptTime = millis();
+  while (WiFi.status() != WL_CONNECTED && millis() - startAttemptTime < 10000) {
+    delay(500);
+    Serial.print(".");
   }
-  if (!rtc.GetIsRunning()) {
-    rtc.SetIsRunning(true);
-    Serial.println("⏱️ RTC 已啟動");
-  }
 
-WiFi.begin(ssid, password);
-Serial.print("📶 嘗試使用預設 SSID 連線中...");
-
-unsigned long startAttemptTime = millis();
-while (WiFi.status() != WL_CONNECTED && millis() - startAttemptTime < 10000) {
-  delay(500);
-  Serial.print(".");
-}
-
-if (WiFi.status() == WL_CONNECTED) {
-  Serial.println("\n✅ 已成功連線到預設 Wi-Fi");
-  digitalWrite(wifiStatusLED, HIGH);
-} else {
-  Serial.println("\n❌ 預設 Wi-Fi 連線失敗，啟用 WiFiManager");
-
-  WiFiManager wm;
-  wm.setDebugOutput(true);
-  wm.setTimeout(60);
-  wm.setConnectTimeout(20);
-
-  bool res = wm.autoConnect("JJY_Config");
-  if (!res) {
-    Serial.println("❌ WiFiManager 連線失敗，請檢查設定");
-  } else {
-    Serial.println("✅ WiFiManager 成功連線");
+  // ✅ 若成功連線
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.println("\n✅ 已成功連線到預設 Wi-Fi");
     digitalWrite(wifiStatusLED, HIGH);
-  }
-}
+  } 
+  // ❌ 預設連線失敗，改用 WiFiManager 進入設定模式
+  else {
+    Serial.println("\n❌ 預設 Wi-Fi 連線失敗，啟用 WiFiManager");
 
+    // LCD 顯示設定提示
+    lcd.clear();
+    lcd.setCursor(0, 0);
+    lcd.print("Setup WiFi Via");
+    lcd.setCursor(0, 1);
+    lcd.print("SSID: JJY_config");
+
+    // 設定時區輸入欄位（格式為 +9、+8 等）
+    WiFiManagerParameter tzParam("tz", "Time Zone (e.g. +9 for JST, +8 for TWN)", "+9", 4);
+    // 設定多久重新對時（預設6小時等）
+    WiFiManagerParameter syncParam("sync", "Auto Sync Interval (hr)", "6", 3);
+
+    WiFiManager wm;
+    wm.setDebugOutput(true);
+    wm.setTimeout(60);
+    wm.setConnectTimeout(20);
+    wm.addParameter(&tzParam);
+    wm.addParameter(&syncParam);
+
+    // 啟動 WiFiManager 設定頁面
+    bool res = wm.autoConnect("JJY_Config");
+    if (!res) {
+      Serial.println("❌ WiFiManager 連線失敗，請檢查設定");
+
+      // ✅ LCD 顯示失敗後進入 RTC 模式
+      lcd.clear();
+      lcd.setCursor(0, 0);
+      lcd.print("WiFi Failed");
+      lcd.setCursor(0, 1);
+      lcd.print("Use RTC Time");
+    }
+    
+    else 
+    
+    {
+      Serial.println("✅ WiFiManager 成功連線");
+      digitalWrite(wifiStatusLED, HIGH);
+
+      // 📌 解析使用者設定的時區值並轉為秒
+      const char* tzInput = tzParam.getValue();
+      if (tzInput != nullptr && strlen(tzInput) > 0) {
+        int tzHour = atoi(tzInput);
+        timeZoneOffset = tzHour * 3600;
+        Serial.printf("🌐 使用者設定時區為：UTC %+d（%d 秒）\n", tzHour, timeZoneOffset);
+      }
+    }
+  }
+
+  // ✅ 嘗試取得 NTP 時間
   bool ntpSuccess = false;
   if (WiFi.status() == WL_CONNECTED) {
     Serial.println("✅ WiFi 已連線");
@@ -109,31 +161,33 @@ if (WiFi.status() == WL_CONNECTED) {
     for (int i = 0; i < 3; i++) {
       if (getLocalTime(&timeInfo)) {
         if (timeInfo.tm_year >= 120) {
-          // 等待下一秒交界
+          // 等待「整秒交界點」
           time_t rawtime;
           time(&rawtime);
           while (time(nullptr) == rawtime) {
             delay(1);
           }
 
+          // 再次取得精確整秒時間
           getLocalTime(&timeInfo);
 
-          // ⏱ 記錄 esp_timer 與 NTP 對應秒基準
+          // 紀錄對時用的 NTP 基準（秒與微秒）
           time_t ntpEpoch;
           time(&ntpEpoch);
           ntpSyncedMicros = esp_timer_get_time();
           ntpSyncedTime = ntpEpoch;
 
-          // 🔁 僅開機時進行一次「整分鐘」對齊，確保60秒循環乾淨
-          delayUntilAlignedRTCWrite();  // 等待下一個整分鐘起點
+          // 等待下一個整分鐘起點，確保 sg[] 計算與傳送對齊
+          delayUntilAlignedRTCWrite();
 
+          // 寫入 RTC 模組
           RtcDateTime ntpTime(
-              timeInfo.tm_year + 1900,
-              timeInfo.tm_mon + 1,
-              timeInfo.tm_mday,
-              timeInfo.tm_hour,
-              timeInfo.tm_min,
-              timeInfo.tm_sec);
+            timeInfo.tm_year + 1900,
+            timeInfo.tm_mon + 1,
+            timeInfo.tm_mday,
+            timeInfo.tm_hour,
+            timeInfo.tm_min,
+            timeInfo.tm_sec);
           rtc.SetDateTime(ntpTime);
 
           digitalWrite(wifiStatusLED, HIGH);
@@ -155,48 +209,58 @@ if (WiFi.status() == WL_CONNECTED) {
     Serial.println("❌ 無法連上 WiFi");
   }
 
-if (!ntpSuccess) {
-  if (rtc.IsDateTimeValid()) {
-    Serial.println("⚠️ 使用 RTC 內部時間：");
-    RtcDateTime now = rtc.GetDateTime();
-    char buf[64];
-    sprintf(buf, "⏰ RTC 時間：%04u/%02u/%02u %02u:%02u:%02u",
-            now.Year(), now.Month(), now.Day(),
-            now.Hour(), now.Minute(), now.Second());
-    Serial.println(buf);
-  
-    if (now.Year() < 2020) {
-      Serial.println("❗ RTC 時間異常（小於 2020），請確認 RTC 電池或是否已初始化");
+  // ❗ NTP 失敗時，改使用 RTC
+  if (!ntpSuccess) {
+    if (rtc.IsDateTimeValid()) {
+      Serial.println("⚠️ 使用 RTC 內部時間：");
+      RtcDateTime now = rtc.GetDateTime();
+      char buf[64];
+      sprintf(buf, "⏰ RTC 時間：%04u/%02u/%02u %02u:%02u:%02u",
+              now.Year(), now.Month(), now.Day(),
+              now.Hour(), now.Minute(), now.Second());
+      Serial.println(buf);
+
+      // 額外防呆（防止 RTC 電池沒裝導致異常）
+      if (now.Year() < 2020) {
+        Serial.println("❗ RTC 時間異常（小於 2020），請確認 RTC 電池或是否已初始化");
+      }
+    } else {
+      Serial.println("🛑 RTC 時間無效，無法取得正確時間！");
     }
-  } else {
-    Serial.println("🛑 RTC 時間無效，無法取得正確時間！");
   }
-}
 
-
-  // 初始化發波器
-  set_fix();
-  ledcSetup(ledChannel, 40000, 8);
-  ledcAttachPin(ledPin, ledChannel);
+  // ✅ 初始化 40kHz PWM 發波器
+  set_fix();  // 初始化 sg[] 固定位（標記秒等）
+  ledcSetup(ledChannel, 40000, 8);        // 設定 PWM 頻率 40kHz，解析度 8-bit
+  ledcAttachPin(ledPin, ledChannel);     // 綁定 GPIO26 作為輸出腳位
 
   Serial.println("✅ 初始化完成，開始發射計時波訊號");
-}
+  lastSyncMillis = millis();  // 確保首次對時後正確記錄時間基準
+  }
+
 
 void delayUntilAlignedRTCWrite() {
   struct timeval tv;
-  gettimeofday(&tv, NULL);  // 取得目前秒與微秒
+  gettimeofday(&tv, NULL);  // 取得當前的「秒數」與「微秒數」
 
+  // 目前的時間（以微秒計）
   int64_t micros_now = tv.tv_sec * 1000000LL + tv.tv_usec;
+
+  // 下一個整分鐘的時間點（以微秒計）
   int64_t micros_next_minute = ((tv.tv_sec / 60) + 1) * 60 * 1000000LL;
+
+  // 計算需要等待的時間（微秒）
   int64_t delay_us = micros_next_minute - micros_now;
 
+  // 序列印出將等待的時間（以秒為單位顯示）
   Serial.printf("⏱ 等待整分鐘對齊：%.3f 秒...\n", delay_us / 1000000.0);
 
+  // 分段延遲：先處理整毫秒，再處理剩餘微秒，避免 delayMicroseconds 超時
   if (delay_us >= 1000) {
-    delay(delay_us / 1000);                  // 毫秒部分
-    delayMicroseconds(delay_us % 1000);      // 微秒部分
+    delay(delay_us / 1000);             // 整毫秒
+    delayMicroseconds(delay_us % 1000); // 剩餘不足一毫秒部分
   } else {
-    delayMicroseconds(delay_us);
+    delayMicroseconds(delay_us);        // 總延遲時間小於 1 毫秒的情況
   }
 
   Serial.println("🎯 已對齊整分鐘起點");
@@ -205,13 +269,13 @@ void delayUntilAlignedRTCWrite() {
 void loop() {
   struct tm timeInfo;
 
-  // 判斷是否成功同步過 NTP（有微秒基準）
+  // ✅ 模式判斷：NTP 模式（精準秒對齊）或 RTC fallback 模式
   if (ntpSyncedMicros > 0) {
-    // NTP 模式：用 esp_timer + UTC 秒推算
+    // 🕒 使用 esp_timer 依據 ntpSyncedTime 精準推算當前 UTC 秒
     while (true) {
       uint64_t nowMicros = esp_timer_get_time();
       uint32_t offset = (nowMicros - ntpSyncedMicros) % 1000000UL;
-      if (offset < 1000) break;
+      if (offset < 1000) break;  // 對齊每秒起點
       delayMicroseconds(100);
     }
 
@@ -219,7 +283,7 @@ void loop() {
     time_t currentSecond = ntpSyncedTime + ((nowMicros - ntpSyncedMicros) / 1000000ULL);
     localtime_r(&currentSecond, &timeInfo);
   } else {
-    // RTC fallback 模式：直接使用 RTC 模組時間
+    // 🕒 RTC 模式：從 DS3231 取得目前時間
     RtcDateTime now = rtc.GetDateTime();
     if (!now.IsValid()) {
       Serial.println("🛑 RTC 時間無效，跳過此次發波");
@@ -227,7 +291,7 @@ void loop() {
       return;
     }
 
-    // 手動轉換成 struct tm 結構（避免 localtime_r 時區誤導）
+    // ✨ 轉換為 struct tm 結構（避免 localtime_r 因時區造成誤差）
     timeInfo.tm_year = now.Year() - 1900;
     timeInfo.tm_mon  = now.Month() - 1;
     timeInfo.tm_mday = now.Day();
@@ -237,32 +301,50 @@ void loop() {
     timeInfo.tm_wday = now.DayOfWeek();
   }
 
-  // 執行發波
+  // ✅ LCD 顯示部分（固定轉為台灣時間 +8 顯示）
+  int tzHour = timeZoneOffset / 3600;
+  time_t baseTime = mktime(&timeInfo);  // 本地時間（NTP/RTC）轉 UTC
+  time_t taiwanTime = baseTime - timeZoneOffset + (8 * 3600);  // 補上台灣時區
+  struct tm fixedTaiwanTime;
+  localtime_r(&taiwanTime, &fixedTaiwanTime);
+
+  // 顯示發波來源（NTP or RTC）與時間
+  displayTimeOnLCD(fixedTaiwanTime, timeInfo, ntpSyncedMicros > 0 ? "NTP" : "RTC", tzHour);
+
+  // ✅ 傳送對應秒的 JJY 時碼
   printAndSendJJY(timeInfo);
-  delay(5);
+
+  delay(5);  // 短暫延遲避免重複執行
+
+  // ✅ 自動重新對時邏輯
+  if (millis() - lastSyncMillis > syncInterval || lastSyncMillis == 0) {
+    Serial.printf("⏳ 觸發重新對時檢查 (%lu ms)\n", millis() - lastSyncMillis);
+    resyncNTP();
+  }
 }
 
-
 void printAndSendJJY(struct tm &timeInfo) {
-  // 顯示目前時間
+  // 顯示目前發波秒的時間戳
   char buf[64];
   snprintf(buf, sizeof(buf), "⏰ %04d/%02d/%02d %02d:%02d:%02d",
            timeInfo.tm_year + 1900, timeInfo.tm_mon + 1, timeInfo.tm_mday,
            timeInfo.tm_hour, timeInfo.tm_min, timeInfo.tm_sec);
   Serial.println(buf);
 
-  // 計算 tm_yday
+  // ✅ 計算當年從元旦起的天數 tm_yday（從 0 起算）
   static const int daysInMonth[] = { 31,28,31,30,31,30,31,31,30,31,30,31 };
   timeInfo.tm_yday = timeInfo.tm_mday - 1;
   for (int i = 0; i < timeInfo.tm_mon; ++i) {
     timeInfo.tm_yday += daysInMonth[i];
   }
+
+  // 若為閏年且超過 2 月，補加一天
   int year = timeInfo.tm_year + 1900;
   if ((year % 4 == 0 && year % 100 != 0) || (year % 400 == 0)) {
     if (timeInfo.tm_mon > 1) timeInfo.tm_yday += 1;
   }
 
-  // 處理閏秒
+  // ✅ 處理閏秒（leap second）
   int se = timeInfo.tm_sec, sh = 0;
   if (se == 60) {
     sg[53] = LS1 = 1; sg[54] = LS2 = 0; se = 59; sh = 1;
@@ -270,31 +352,35 @@ void printAndSendJJY(struct tm &timeInfo) {
     sg[53] = LS1 = 1; sg[54] = LS2 = 1; se = 58; sh = 2;
   }
 
-  // 編碼 sg[] 時碼資料
+  // ✅ 建立 sg[] 時碼資料（BCD 編碼 + 奇偶檢查）
   set_fix();
   set_min(timeInfo.tm_min);
   set_hour(timeInfo.tm_hour);
-  set_day(timeInfo.tm_yday + 1);
+  set_day(timeInfo.tm_yday + 1);    // JJY 傳送的「日」為從 1 起算
   set_wday(timeInfo.tm_wday);
-  set_year(year - 2000);
+  set_year(year - 2000);            // JJY 年格式為兩位數
 
-  // 發送 JJY 時碼
+  // ✅ 發送 sg[] 資料
   Serial.printf("📡 開始發送時間碼：從 %02d 秒起，預計長度 %d 秒\n", se, 60 + sh - se);
+
   char t[64];
   for (int i = se; i < 60 + sh && i < 62; ++i) {
+    // 異常值修正（保護 sg[] 不被錯誤數值破壞）
     if (sg[i] != -1 && sg[i] != 0 && sg[i] != 1 && sg[i] != 255) {
       Serial.printf("⚠️ sg[%d] 值異常：%d，自動修正為 0\n", i, sg[i]);
       sg[i] = 0;
     }
 
+    // 印出 sg[i] 值
     snprintf(t, sizeof(t), "%02d ", sg[i]);
     Serial.print(t);
 
-      // 每 10 個一換行
+    // 每 10 筆換行
     if ((i - se + 1) % 10 == 0) {
-    Serial.println();
-  }
+      Serial.println();
+    }
 
+    // ✅ 發送對應 PWM 波形
     switch (sg[i]) {
       case -1:
       case 255: mark(); break;
@@ -304,122 +390,189 @@ void printAndSendJJY(struct tm &timeInfo) {
   }
 }
 
-
+// ➤ 設定年份（n 為兩位數年份，例如 24 代表 2024）
 void set_year(int n){
-  
   int m = dec2BCD(n);
-
   sg[48] = m % 2; m = m >> 1;
   sg[47] = m % 2; m = m >> 1;
   sg[46] = m % 2; m = m >> 1;
   sg[45] = m % 2; m = m >> 1;
-
   sg[44] = m % 2; m = m >> 1;
   sg[43] = m % 2; m = m >> 1;
   sg[42] = m % 2; m = m >> 1;
   sg[41] = m % 2;
 }
 
+// ➤ 設定當年的第幾天（1~366）
 void set_day(int n){
-  
   int m = dec2BCD(n);
-
   sg[33] = m % 2; m = m >> 1;
   sg[32] = m % 2; m = m >> 1;
   sg[31] = m % 2; m = m >> 1;
   sg[30] = m % 2; m = m >> 1;
-
   sg[28] = m % 2; m = m >> 1;
   sg[27] = m % 2; m = m >> 1;
   sg[26] = m % 2; m = m >> 1;
   sg[25] = m % 2; m = m >> 1;
-
   sg[23] = m % 2; m = m >> 1;
   sg[22] = m % 2;
 }
 
+// ➤ 設定星期幾（0~6，週日為 0）
 void set_wday(int m){
-
   sg[52] = m % 2; m = m >> 1;
   sg[51] = m % 2; m = m >> 1;
   sg[50] = m % 2;
 }
 
+// ➤ 設定小時（0~23）
 void set_hour(int n){
-  
   int m = dec2BCD(n);
-
   sg[18] = m % 2; m = m >> 1;
   sg[17] = m % 2; m = m >> 1;
   sg[16] = m % 2; m = m >> 1;
   sg[15] = m % 2; m = m >> 1;
-  
   sg[13] = m % 2; m = m >> 1;
   sg[12] = m % 2;
-  
-  char PA1 = sg[18] ^ sg[17] ^ sg[16] ^ sg[15] ^ sg[13] ^ sg[12]; //PA1 = (20h+10h+8h+4h+2h+1h) mod 2
+
+  // ➕ PA1 奇偶校驗位
+  char PA1 = sg[18] ^ sg[17] ^ sg[16] ^ sg[15] ^ sg[13] ^ sg[12];
   sg[36] = PA1;
 }
 
+// ➤ 設定分鐘（0~59）
 void set_min(int n){
-  
   int m = dec2BCD(n);
-
-
   sg[8] = m % 2; m = m >> 1;
   sg[7] = m % 2; m = m >> 1;
   sg[6] = m % 2; m = m >> 1;
   sg[5] = m % 2; m = m >> 1;
-
   sg[3] = m % 2; m = m >> 1;
   sg[2] = m % 2; m = m >> 1;
   sg[1] = m % 2;
 
-  char PA2 = sg[8] ^ sg[7] ^ sg[6] ^ sg[5] ^ sg[3] ^ sg[2] ^ sg[1]; //PA2 = (40m+20m+10m+8m+4m+2m+1m) mod 2
+  // ➕ PA2 奇偶校驗位
+  char PA2 = sg[8] ^ sg[7] ^ sg[6] ^ sg[5] ^ sg[3] ^ sg[2] ^ sg[1];
   sg[37] = PA2;
 }
 
+// ➤ 設定 sg[] 固定位置（M標記與 0 值欄位初始化）
 void set_fix(){
   sg[0] = sg[9] = sg[19] = sg[29] = sg[39] = sg[49] = sg[59] = M;
-  sg[4] = sg[10] = sg[11] = sg[14] = sg[20] = sg[21] = sg[24] = sg[34] = sg[35] = sg[55] = sg[56] = sg[57] = sg[58] = 0;
+  sg[4] = sg[10] = sg[11] = sg[14] = sg[20] = sg[21] =
+  sg[24] = sg[34] = sg[35] = sg[55] = sg[56] = sg[57] = sg[58] = 0;
   sg[38] = sg[40] = 0;
   sg[53] = sg[54] = 0;
-  
 }
 
+// ➤ 將十進位轉為 BCD（Binary Coded Decimal）
 int dec2BCD(int decimal) {
-    int bcd = 0;
-    int multiplier = 1;
-
-    while (decimal > 0) {
-        int digit = decimal % 10;
-        bcd += digit * multiplier;
-        multiplier *= 16; 
-        decimal /= 10;
-    }
-
-    return bcd;
-    
-    ///printf("BCD: %X\n", bcd);
+  int bcd = 0;
+  int multiplier = 1;
+  while (decimal > 0) {
+    int digit = decimal % 10;
+    bcd += digit * multiplier;
+    multiplier *= 16;
+    decimal /= 10;
+  }
+  return bcd;
 }
-
-void mark() {   // 0.2sec
+// ➤ 發送 mark（0.2 秒 on / 0.8 秒 off）
+void mark() {
   ledcWrite(ledChannel, 127);
   delay(200);
   ledcWrite(ledChannel, 0);
   delay(800);
 }
 
-void zero() {  // 0.8sec
+// ➤ 發送 0（0.8 秒 on / 0.2 秒 off）
+void zero() {
   ledcWrite(ledChannel, 127);
   delay(800);
   ledcWrite(ledChannel, 0);
   delay(200);
 }
 
-void one() {    // 0.5sec
+// ➤ 發送 1（0.5 秒 on / 0.5 秒 off）
+void one() {
   ledcWrite(ledChannel, 127);
   delay(500);
   ledcWrite(ledChannel, 0);
   delay(500);
+}
+
+
+// 📺 將目前時間資訊顯示於 LCD 螢幕上（每秒更新）
+// fixedTaiwanTime：固定顯示台灣時間（UTC+8）
+// rawTimeInfo：實際發波時間（NTP 或 RTC）
+// sourceLabel：來源標籤（NTP 或 RTC）
+// tzHour：使用者設定的時區（如 +8 或 +9）
+
+void displayTimeOnLCD(const struct tm &fixedTaiwanTime,
+                      const struct tm &rawTimeInfo,
+                      const char* sourceLabel,
+                      int tzHour) {
+  char line1[17];  // 第 1 行顯示：NTP 23:59 TAIWAN
+  char line2[17];  // 第 2 行顯示：Send 22:59 TZ+9
+
+  // 格式化台灣時間顯示（固定 UTC+8）
+  snprintf(line1, sizeof(line1), "%s %02d:%02d TAIWAN",
+           sourceLabel,
+           fixedTaiwanTime.tm_hour,
+           fixedTaiwanTime.tm_min);
+
+  // 格式化實際發波時間與使用者設定的時區
+  snprintf(line2, sizeof(line2), "Send %02d:%02d TZ%+d",
+           rawTimeInfo.tm_hour,
+           rawTimeInfo.tm_min,
+           tzHour);
+
+  // 清除畫面，置中顯示兩行資訊
+  lcd.clear();
+  lcd.setCursor((16 - strlen(line1)) / 2, 0);  // 第 1 行置中
+  lcd.print(line1);
+
+  lcd.setCursor((16 - strlen(line2)) / 2, 1);  // 第 2 行置中
+  lcd.print(line2);
+}
+
+void resyncNTP() {
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("❌ 無法重新對時：WiFi 尚未連線");
+    ntpSyncedMicros = 0;  // 切回 RTC 模式
+    return;
+  }
+
+  Serial.println("🔄 開始重新對時...");
+  configTime(timeZoneOffset, 0, "time.stdtime.gov.tw", "time.google.com", "pool.ntp.org");
+
+  struct tm timeInfo;
+  if (getLocalTime(&timeInfo)) {
+    Serial.println("🌀 getLocalTime() 成功，重新同步 NTP 模式");
+
+    time_t ntpEpoch;
+    time(&ntpEpoch);
+    ntpSyncedMicros = esp_timer_get_time();
+    ntpSyncedTime = ntpEpoch;
+
+    delayUntilAlignedRTCWrite();
+
+    RtcDateTime ntpTime(
+      timeInfo.tm_year + 1900,
+      timeInfo.tm_mon + 1,
+      timeInfo.tm_mday,
+      timeInfo.tm_hour,
+      timeInfo.tm_min,
+      timeInfo.tm_sec);
+    rtc.SetDateTime(ntpTime);
+
+    Serial.printf("🔁 重新校時成功：%04d/%02d/%02d %02d:%02d:%02d\n",
+                  ntpTime.Year(), ntpTime.Month(), ntpTime.Day(),
+                  ntpTime.Hour(), ntpTime.Minute(), ntpTime.Second());
+
+    lastSyncMillis = millis();  // 更新成功時間
+  } else {
+    Serial.println("⚠️ 重新對時失敗，切換回 RTC 模式");
+    ntpSyncedMicros = 0;         // 切回 RTC 模式
+  }
 }
