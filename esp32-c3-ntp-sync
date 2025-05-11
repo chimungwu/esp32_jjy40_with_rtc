@@ -73,9 +73,9 @@ void setup() {
   ledcSetup(ledChannel, 40000, 8);
   ledcAttachPin(ledPin, ledChannel);
 
-// 一開機先閃爍 10 秒
+// 一開機先閃爍 15 秒
 unsigned long blinkStart = millis();
-while (millis() - blinkStart < 10000) {
+while (millis() - blinkStart < 15000) {
   if (millis() - lastBlink >= 300) {
     ledState = !ledState;
     digitalWrite(STATUS_LED, ledState ? HIGH : LOW);
@@ -92,19 +92,20 @@ while (millis() - blinkStart < 10000) {
 
   WiFiManagerParameter tzParam("tz", "Enter timezone (e.g. +8 for Taiwan, default +9 for Japan)", "+9", 4);
   wm.addParameter(&tzParam);
-  wm.setConfigPortalTimeout(30);  // 最多等待 30 秒設定
+  wm.setConfigPortalTimeout(60);  // 最多等待 60 秒設定
   wm.startConfigPortal("JJY-Setup");  // 啟動設定介面（非阻塞）
   unsigned long configStart = millis();
 
-  while (!wm.getWiFiIsSaved() && (millis() - configStart < 30000)) {
+  while (!wm.getWiFiIsSaved() && (millis() - configStart < 20000)) {
     wm.process();       // 非阻塞處理 WiFiManager
     delay(100);
   }
   
   Serial.println("🔧 啟動 WiFi 設定介面中...");
-  // 時間到或設定完成，關閉設定頁並嘗試連線記憶的 WiFi
-WiFi.mode(WIFI_STA);
-WiFi.begin();
+  
+// 時間到或設定完成，關閉設定頁並嘗試連線記憶的 WiFi
+  WiFi.mode(WIFI_STA);
+  WiFi.begin();
 
 unsigned long connectStart = millis();
 while (WiFi.status() != WL_CONNECTED && millis() - connectStart < 10000) {
