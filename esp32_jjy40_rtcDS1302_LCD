@@ -83,10 +83,6 @@ void setup() {
   delay(100);
   Serial.println("🟢 setup 開始");
 
-  // ✅ 嘗試自動連接預設 WiFi（SSID 與密碼）
-  WiFi.begin(ssid, password);
-  Serial.print("📶 嘗試使用預設 SSID 連線中...");
-
   // 最多等待 10 秒
   unsigned long startAttemptTime = millis();
   while (WiFi.status() != WL_CONNECTED && millis() - startAttemptTime < 10000) {
