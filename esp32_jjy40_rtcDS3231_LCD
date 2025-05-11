@@ -53,8 +53,8 @@ char PA1, PA2, SU1, LS1, LS2;    // 奇偶檢查位與閏秒旗標等
 char sg[62];
 
 // WiFi 連線帳號與密碼（可透過 WiFiManager 修改）
-const char* ssid     = "Ming";       
-const char* password = "0988660930";
+const char* ssid     = "SSID";       
+const char* password = "PASSWORD";
 
 // NTP 精準對時後的時間基準
 uint64_t ntpSyncedMicros = 0;    // 紀錄對時時的微秒時間
