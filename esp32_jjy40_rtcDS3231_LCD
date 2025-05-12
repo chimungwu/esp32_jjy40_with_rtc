@@ -267,14 +267,14 @@ void loop() {
 
   // ✅ 模式判斷：NTP 模式（精準秒對齊）或 RTC fallback 模式
   if (ntpSyncedMicros > 0) {
-    // 🕒 使用 esp_timer 依據 ntpSyncedTime 精準推算當前 UTC 秒
+    // 🕒 使用 mod 對齊秒起點（不預估、不補償）
     while (true) {
       uint64_t nowMicros = esp_timer_get_time();
-      uint32_t offset = (nowMicros - ntpSyncedMicros) % 1000000UL;
-      if (offset < 1000) break;  // 對齊每秒起點
+      if ((nowMicros - ntpSyncedMicros) % 1000000UL < 1000) break;
       delayMicroseconds(100);
     }
 
+    // 推算目前時間
     uint64_t nowMicros = esp_timer_get_time();
     time_t currentSecond = ntpSyncedTime + ((nowMicros - ntpSyncedMicros) / 1000000ULL);
     localtime_r(&currentSecond, &timeInfo);
