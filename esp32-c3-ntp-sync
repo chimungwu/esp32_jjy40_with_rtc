@@ -2,7 +2,7 @@
     JJY Transmitter (ver.0.11) - ESP32-C3 SuperMini / NodeMCU-32S Edition
     ---------------------------------------------------------------------
     Based on: ver.0.10 (2024/05/16 by Nash Shuji009)
-    Modified by: chimungwu (2025/05/12)
+    Modified by: chimungwu (2025/05/08)
   
     Target Board: ESP32-C3 SuperMini（預設設定）
     JJY Output: GPIO6 (PWM 40kHz)
@@ -17,8 +17,8 @@
     == 功能說明 ==
     ✅ 每次開機都進入 WiFiManager「JJY-Setup」設定模式，讓使用者設定 Wi-Fi 與時區
     ✅ 使用者可在設定頁輸入時區（格式如 +8 或 +9），支援自訂 NTP 時區校時
-    ✅ 成功連線 Wi-Fi 並設定後，會自動同步 NTP 並開始發送模擬 JJY 時碼
-    ✅ 發波時間與日本 JJY 電波對齊（整分鐘開始），每秒傳送一次時間碼
+    ✅ 成功連線 Wi-Fi 並設定後，會自動同步 NTP 並記錄精準秒基準（含微秒）後開始發送模擬 JJY 時碼
+    ✅ 發波以每秒為單位，每一秒皆以微秒對齊方式啟動，確保與日本 JJY 同步
     ✅ 支援閏秒與錯誤值檢查，發送結束後序列埠會輸出傳送內容
   
     == 指示燈狀態 ==
@@ -39,6 +39,9 @@
 #include <WiFi.h>
 #include <WiFiManager.h>
 #include <Preferences.h>
+#include <sys/time.h>
+uint64_t ntpSyncedMicros = 0;
+time_t ntpSyncedTime = 0;
 
 // === Hardware Settings ===
 const int ledChannel = 0;  // PWM channel for JJY signal output
@@ -63,15 +66,13 @@ String tzString = "+9";
 long timezoneOffsetSec = 9 * 3600L;
 
 void setup() {
-  Serial.begin(115200);
-  delay(1000);
-
-  pinMode(STATUS_LED, OUTPUT);
-  digitalWrite(STATUS_LED, LOW);
-
+//設定發波頻率
   set_fix();
   ledcSetup(ledChannel, 40000, 8);
   ledcAttachPin(ledPin, ledChannel);
+
+  pinMode(STATUS_LED, OUTPUT);
+  digitalWrite(STATUS_LED, LOW);
 
 // 一開機先閃爍 15 秒
 unsigned long blinkStart = millis();
@@ -85,14 +86,17 @@ while (millis() - blinkStart < 15000) {
 }
 
 // 閃完後恆亮
-
   digitalWrite(STATUS_LED, HIGH);
-  
-  WiFiManager wm;
 
+//序列埠啟動
+  Serial.begin(115200);
+  delay(2000);
+
+//使用WiFiManager設定網路及時區
+  WiFiManager wm;
   WiFiManagerParameter tzParam("tz", "Enter timezone (e.g. +8 for Taiwan, default +9 for Japan)", "+9", 4);
   wm.addParameter(&tzParam);
-  wm.setConfigPortalTimeout(60);  // 最多等待 60 秒設定
+  wm.setConfigPortalTimeout(30);  // 最多等待 30 秒設定
   wm.startConfigPortal("JJY-Setup");  // 啟動設定介面（非阻塞）
   unsigned long configStart = millis();
 
@@ -102,10 +106,10 @@ while (millis() - blinkStart < 15000) {
   }
   
   Serial.println("🔧 啟動 WiFi 設定介面中...");
+  // 時間到或設定完成，關閉設定頁並嘗試連線記憶的 WiFi
   
-// 時間到或設定完成，關閉設定頁並嘗試連線記憶的 WiFi
-  WiFi.mode(WIFI_STA);
-  WiFi.begin();
+    WiFi.mode(WIFI_STA);
+    WiFi.begin();
 
 unsigned long connectStart = millis();
 while (WiFi.status() != WL_CONNECTED && millis() - connectStart < 10000) {
@@ -149,20 +153,20 @@ while (WiFi.status() != WL_CONNECTED && millis() - connectStart < 10000) {
 
   if (getLocalTime(&timeInfo)) {
     ntpSynced = true;
+
+    // 紀錄精準對時時間點（秒 + 微秒）
+    time(&ntpSyncedTime);
+    ntpSyncedMicros = esp_timer_get_time();
+
     Serial.println("\n✅ NTP 同步成功");
 
     char timeStr[64];
-    sprintf(timeStr, "🕒 當前時間: %04d-%02d-%02d %02d:%02d:%02d",
-            timeInfo.tm_year + 1900, timeInfo.tm_mon + 1, timeInfo.tm_mday,
-            timeInfo.tm_hour, timeInfo.tm_min, timeInfo.tm_sec);
-    Serial.println(timeStr);
+
   } else {
     Serial.println("\n❌ NTP 同步失敗");
     ntpSynced = false;
   }
 }
-
-
 
 void delayUntilAlignedRTCWrite() {
   struct timeval tv;
@@ -186,15 +190,26 @@ void delayUntilAlignedRTCWrite() {
 bool hasAligned = false;  // ⏱ 只在第一次對齊
 
 void loop() {
-  if (ntpSynced) {
-    if (!hasAligned) {
-      delayUntilAlignedRTCWrite();
-      hasAligned = true;
-    }
-    printAndSendJJY();
-  } else {
-    delay(1000);  // 無同步情況等待重新對時
+  if (!ntpSynced) {
+    delay(1000);
+    return;
   }
+
+  // 對齊每秒起點（微秒）
+  while (true) {
+    uint64_t nowMicros = esp_timer_get_time();
+    if ((nowMicros - ntpSyncedMicros) % 1000000UL < 1000) break;
+    delayMicroseconds(100);
+  }
+
+  // 推算目前秒數
+  uint64_t nowMicros = esp_timer_get_time();
+  time_t currentTime = ntpSyncedTime + ((nowMicros - ntpSyncedMicros) / 1000000ULL);
+
+  struct tm timeInfo;
+  localtime_r(&currentTime, &timeInfo);
+
+  printAndSendJJY(timeInfo);
 }
 
 
@@ -214,22 +229,11 @@ void set_year(int n){
   sg[41] = m % 2;
 }
 
-void printAndSendJJY() {
-  struct tm timeInfo;
+void printAndSendJJY(struct tm &timeInfo) {
+
   char s[40];
   char t[64];
   int se, mi, sh;
-
-  getLocalTime(&timeInfo);
-
-  sprintf(s, "%04d/%02d/%02d %02d:%02d:%02d",
-          timeInfo.tm_year + 1900, timeInfo.tm_mon + 1, timeInfo.tm_mday,
-          timeInfo.tm_hour, timeInfo.tm_min, timeInfo.tm_sec);
-  Serial.println(s);
-
-  sprintf(t, "Y:%02d  D:%03d WD:%01d",
-          timeInfo.tm_year + 1900 - 2000, timeInfo.tm_yday + 1, timeInfo.tm_wday);
-  Serial.println(t);
 
   // 閏秒補正
   se = timeInfo.tm_sec;
@@ -262,8 +266,6 @@ void printAndSendJJY() {
       lastBlink = millis();
     }
 
-    sprintf(t, "%02d ", sg[i]);
-    Serial.print(t);
     switch (sg[i]) {
       case -1:
       case 255:
@@ -278,8 +280,6 @@ void printAndSendJJY() {
       default:
         zero();
         sprintf(t, "%02d  %02d", i, sg[i]);
-        Serial.print("***BUG data ***  ");
-        Serial.println(t);
         break;
     }
   }
@@ -360,7 +360,7 @@ int dec2BCD(int decimal) {
     while (decimal > 0) {
         int digit = decimal % 10;
         bcd += digit * multiplier;
-        multiplier *= 16; // 10進数の各桁を4ビットのBCDに変換するために16倍する
+        multiplier *= 16; 
         decimal /= 10;
     }
 
