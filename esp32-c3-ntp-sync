@@ -45,7 +45,7 @@ time_t ntpSyncedTime = 0;
 
 // === Hardware Settings ===
 const int ledChannel = 0;  // PWM channel for JJY signal output
-const int ledPin     = 7;  // PWM output pin (connected to JJY antenna via GPIO6)
+const int ledPin     = 6;  // PWM output pin (connected to JJY antenna via GPIO6)
 #define STATUS_LED    8    // Onboard status LED (GPIO8 on ESP32-C3 SuperMini)
 
 // === JJY Signal Variables ===
