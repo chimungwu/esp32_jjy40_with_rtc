@@ -1,0 +1,408 @@
+/*
+  JJY Transmitter (ver.0.11) - NodeMCU-32S Edition
+  ---------------------------------------------------------------------
+  Based on: ver.0.10 (2024/05/16 by Nash Shuji009)
+  Modified by: chimungwu (2025/05/13)
+
+  🟢 目前使用：NodeMCU-32S
+  - JJY 訊號輸出腳位：GPIO26（PWM 40kHz）
+  - 狀態 LED：GPIO2（NTP 對時後發波中閃爍）
+
+  == 功能特色 ==
+  ✅ 每次開機提供 60 秒設定頁，使用者可透過 WiFiManager 設定 Wi-Fi、時區
+  ✅ 設定逾時後將自動連線已儲存 Wi-Fi
+  ✅ 成功連線後即同步 NTP 時間，支援自訂 UTC 時區偏移（如 +9, +8）
+  ✅ 發波訊號自整分鐘開始，對齊每秒並依照 JJY 標準傳送時間碼
+  ✅ 支援閏秒處理、錯誤檢查，序列埠輸出每秒發波內容
+  ✅ NTP 同步失敗時不發波，等待重新啟動
+
+  == 狀態 LED 行為 ==
+  - 開機階段：快速閃爍 15 秒（初始化中）
+  - 設定階段：恆亮（等待使用者設定 WiFi / 時區）
+  - 發波階段：每秒閃爍（代表 NTP 同步成功並開始發送時間碼）
+
+  == 接線說明（NodeMCU-32S 範例） ==
+  - JJY 發波線圈：GPIO26 → 220Ω → 線圈 → GND
+  - 狀態 LED（選用）：GPIO2 → 220Ω → LED → GND
+
+  == 相依函式庫 ==
+  - WiFiManager by tzapu: https://github.com/tzapu/WiFiManager
+
+  📌 預設時區為 UTC+9（日本），如需顯示台灣時間請設定為 +8
+  📌 本程式不使用 RTC 模組，若未成功連線 WiFi 並同步 NTP，將不會進行發波。
+*/
+
+#include <Arduino.h>
+#include <driver/ledc.h>
+#include <WiFi.h>
+#include <WiFiManager.h>
+#include <Preferences.h>
+#include <sys/time.h>
+uint64_t ntpSyncedMicros = 0;
+time_t ntpSyncedTime = 0;
+
+// === Hardware Settings ===
+const int ledChannel = 0;  // PWM channel for JJY signal output
+const int ledPin     = 26;  // JJY 訊號輸出腳位：GPIO26（PWM 40kHz）
+#define STATUS_LED    2    // Onboard status LED 
+
+// === JJY Signal Variables ===
+char P0, P1, P2, P3, P4, P5;
+const char M = P0 = P1 = P2 = P3 = P4 = P5 = -1;  // Marker signal (-1 or 255)
+char PA1, PA2;
+char SU1, LS1, LS2;
+char sg[62];
+
+// === Time Sync Status ===
+bool ntpSynced       = false;
+unsigned long lastBlink = 0;
+bool ledState        = false;
+
+// === Timezone Configuration ===
+Preferences prefs;
+String tzString = "+9";
+long timezoneOffsetSec = 9 * 3600L;
+
+void setup() {
+  pinMode(STATUS_LED, OUTPUT);
+  digitalWrite(STATUS_LED, LOW);
+  
+  set_fix();
+  ledcSetup(ledChannel, 40000, 8);
+  ledcAttachPin(ledPin, ledChannel);
+
+// 一開機先閃爍 10 秒
+unsigned long blinkStart = millis();
+while (millis() - blinkStart < 10000) {
+  if (millis() - lastBlink >= 300) {
+    ledState = !ledState;
+    digitalWrite(STATUS_LED, ledState ? HIGH : LOW);
+    lastBlink = millis();
+  }
+  delay(10);
+}
+// 閃完後恆亮
+  digitalWrite(STATUS_LED, HIGH);
+  Serial.begin(115200);
+  Serial.println("🟢 測試輸出 OK！");
+  delay(2000);
+
+//使用WiFiManager設定網路及時區
+  WiFiManager wm;
+  WiFiManagerParameter tzParam("tz", "Enter timezone (e.g. +8 for Taiwan, default +9 for Japan)", "+9", 4);
+  wm.addParameter(&tzParam);
+  wm.setConfigPortalTimeout(60);  // 最多等待 60 秒設定
+  wm.startConfigPortal("JJY-Setup");  // 啟動設定介面（非阻塞）
+  unsigned long configStart = millis();
+
+  while (!wm.getWiFiIsSaved() && (millis() - configStart < 20000)) {
+    wm.process();       // 非阻塞處理 WiFiManager
+    delay(100);
+  }
+  
+  Serial.println("🔧 啟動 WiFi 設定介面中...");
+  // 時間到或設定完成，關閉設定頁並嘗試連線記憶的 WiFi
+  
+    WiFi.mode(WIFI_STA);
+    WiFi.begin();
+
+unsigned long connectStart = millis();
+while (WiFi.status() != WL_CONNECTED && millis() - connectStart < 10000) {
+  delay(500);
+  Serial.print(".");
+}
+
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("\n❌ WiFi 設定逾時，無法連線");
+    ntpSynced = false;
+    return;
+  }
+
+  Serial.println("\n📶 WiFi 連線成功");
+
+  tzString = String(tzParam.getValue());
+  prefs.begin("jjy", false);
+  prefs.putString("tz", tzString);
+  prefs.end();
+
+  int tz_hour = tzString.toInt();
+  timezoneOffsetSec = tz_hour * 3600L;
+  Serial.printf("🌐 Timezone 設定為 UTC%+d\n", tz_hour);
+
+  configTime(timezoneOffsetSec, 0,
+             "time.stdtime.gov.tw", "time.google.com", "ntp.twnic.tw");
+
+  struct tm timeInfo;
+  int retries = 0;
+
+  Serial.print("⏳ 正在透過 NTP 同步時間");
+  while (!getLocalTime(&timeInfo) && retries < 10) {
+    if (millis() - lastBlink >= 300) {
+      ledState = !ledState;
+      digitalWrite(STATUS_LED, ledState ? HIGH : LOW);
+      lastBlink = millis();
+    }
+    delay(10);
+    retries++;
+  }
+
+ if (getLocalTime(&timeInfo)) {
+    ntpSynced = true;
+    time(&ntpSyncedTime);
+    ntpSyncedMicros = esp_timer_get_time();
+
+    Serial.println("\n==============================");
+    Serial.println("✅ NTP 同步成功！");
+    Serial.print("🌐 設定時區：UTC");
+    Serial.println(tzString);
+
+    char timeStr[64];
+    strftime(timeStr, sizeof(timeStr), "%Y-%m-%d %H:%M:%S", &timeInfo);
+    Serial.print("🕒 目前時間：");
+    Serial.println(timeStr);
+
+    Serial.print("📶 WiFi 連線至：");
+    Serial.println(WiFi.SSID());
+
+    Serial.print("📡 IP 位址：");
+    Serial.println(WiFi.localIP());
+    Serial.println("==============================\n");
+    delayUntilAlignedRTCWrite();  // <== 新增此行確保首個 sg[] 是整分鐘起點
+  } else {
+    Serial.println("\n❌ NTP 同步失敗，請檢查網路或伺服器設定");
+    ntpSynced = false;
+  }
+}
+
+void delayUntilAlignedRTCWrite() {
+  struct timeval tv;
+  gettimeofday(&tv, NULL);
+
+  int64_t micros_now = tv.tv_sec * 1000000LL + tv.tv_usec;
+  int64_t micros_next_minute = ((tv.tv_sec / 60) + 1) * 60 * 1000000LL;
+
+  int64_t delay_us = micros_next_minute - micros_now;
+
+  Serial.printf("⏱ 對齊延遲 %.3f 秒...\n", delay_us / 1000000.0);
+
+  if (delay_us >= 1000) {
+    delay(delay_us / 1000);                  // 毫秒以上部分
+    delayMicroseconds(delay_us % 1000);      // 剩下微秒
+  } else {
+    delayMicroseconds(delay_us);
+  }
+}
+
+bool hasAligned = false;  // ⏱ 只在第一次對齊
+
+void loop() {
+  if (!ntpSynced) {
+    delay(1000);
+    return;
+  }
+
+  // 對齊每秒起點（微秒）
+  while (true) {
+    uint64_t nowMicros = esp_timer_get_time();
+    if ((nowMicros - ntpSyncedMicros) % 1000000UL < 1000) break;
+    delayMicroseconds(100);
+  }
+
+  // 推算目前秒數
+  uint64_t nowMicros = esp_timer_get_time();
+  time_t currentTime = ntpSyncedTime + ((nowMicros - ntpSyncedMicros) / 1000000ULL);
+
+  struct tm timeInfo;
+  localtime_r(&currentTime, &timeInfo);
+
+  printAndSendJJY(timeInfo);
+}
+
+
+
+void set_year(int n){
+  
+  int m = dec2BCD(n);
+
+  sg[48] = m % 2; m = m >> 1;
+  sg[47] = m % 2; m = m >> 1;
+  sg[46] = m % 2; m = m >> 1;
+  sg[45] = m % 2; m = m >> 1;
+
+  sg[44] = m % 2; m = m >> 1;
+  sg[43] = m % 2; m = m >> 1;
+  sg[42] = m % 2; m = m >> 1;
+  sg[41] = m % 2;
+}
+
+void printAndSendJJY(struct tm &timeInfo) {
+  int se = timeInfo.tm_sec;
+  int sh = 0;
+
+  // 閏秒補正
+  if (timeInfo.tm_sec == 60) {
+    sg[53] = LS1 = 1;
+    sg[54] = LS2 = 0;
+    se = 59;
+    sh = 1;
+  } else if (timeInfo.tm_sec == 61) {
+    sg[53] = LS1 = 1;
+    sg[54] = LS2 = 1;
+    se = 58;
+    sh = 2;
+  }
+
+  // 建立時間碼
+  set_min(timeInfo.tm_min);
+  set_hour(timeInfo.tm_hour);
+  set_day(timeInfo.tm_yday + 1);
+  set_wday(timeInfo.tm_wday);
+  set_year(timeInfo.tm_year + 1900 - 2000);
+
+  // 顯示發送時間與起始秒數
+  char buf[64];
+  snprintf(buf, sizeof(buf), "⏰ 發送時間：%04d/%02d/%02d %02d:%02d:%02d",
+           timeInfo.tm_year + 1900, timeInfo.tm_mon + 1, timeInfo.tm_mday,
+           timeInfo.tm_hour, timeInfo.tm_min, timeInfo.tm_sec);
+  Serial.println(buf);
+
+  Serial.printf("📡 開始發送時間碼：從 %02d 秒起，預計長度 %d 秒\n", se, 60 + sh - se);
+
+  // 發送 sg[] 並顯示內容
+  char t[64];
+  for (int i = se; i < 60 + sh && i < 62; ++i) {
+    // 防呆
+    if (sg[i] != -1 && sg[i] != 0 && sg[i] != 1 && sg[i] != 255) {
+      Serial.printf("⚠️ sg[%d] 值異常：%d，自動修正為 0\n", i, sg[i]);
+      sg[i] = 0;
+    }
+
+    // 顯示 sg[i]
+    snprintf(t, sizeof(t), "%02d ", sg[i]);
+    Serial.print(t);
+    if ((i - se + 1) % 10 == 0) Serial.println();
+
+    // 狀態燈閃爍（每秒一次）
+    if (millis() - lastBlink >= 1000) {
+      ledState = !ledState;
+      digitalWrite(STATUS_LED, ledState ? HIGH : LOW);
+      lastBlink = millis();
+    }
+
+    // 發送對應訊號
+    switch (sg[i]) {
+      case -1:
+      case 255: mark(); break;
+      case 0: zero(); break;
+      case 1: one(); break;
+      default: zero(); break;
+    }
+  }
+}
+
+
+void set_day(int n){
+  
+  int m = dec2BCD(n);
+
+  sg[33] = m % 2; m = m >> 1;
+  sg[32] = m % 2; m = m >> 1;
+  sg[31] = m % 2; m = m >> 1;
+  sg[30] = m % 2; m = m >> 1;
+
+  sg[28] = m % 2; m = m >> 1;
+  sg[27] = m % 2; m = m >> 1;
+  sg[26] = m % 2; m = m >> 1;
+  sg[25] = m % 2; m = m >> 1;
+
+  sg[23] = m % 2; m = m >> 1;
+  sg[22] = m % 2;
+}
+
+void set_wday(int m){
+
+  sg[52] = m % 2; m = m >> 1;
+  sg[51] = m % 2; m = m >> 1;
+  sg[50] = m % 2;
+}
+
+void set_hour(int n){
+  
+  int m = dec2BCD(n);
+
+  sg[18] = m % 2; m = m >> 1;
+  sg[17] = m % 2; m = m >> 1;
+  sg[16] = m % 2; m = m >> 1;
+  sg[15] = m % 2; m = m >> 1;
+  
+  sg[13] = m % 2; m = m >> 1;
+  sg[12] = m % 2;
+  
+  char PA1 = sg[18] ^ sg[17] ^ sg[16] ^ sg[15] ^ sg[13] ^ sg[12]; //PA1 = (20h+10h+8h+4h+2h+1h) mod 2
+  sg[36] = PA1;
+}
+
+void set_min(int n){
+  
+  int m = dec2BCD(n);
+
+
+  sg[8] = m % 2; m = m >> 1;
+  sg[7] = m % 2; m = m >> 1;
+  sg[6] = m % 2; m = m >> 1;
+  sg[5] = m % 2; m = m >> 1;
+
+  sg[3] = m % 2; m = m >> 1;
+  sg[2] = m % 2; m = m >> 1;
+  sg[1] = m % 2;
+
+  char PA2 = sg[8] ^ sg[7] ^ sg[6] ^ sg[5] ^ sg[3] ^ sg[2] ^ sg[1]; //PA2 = (40m+20m+10m+8m+4m+2m+1m) mod 2
+  sg[37] = PA2;
+}
+
+
+void set_fix(){
+  sg[0] = sg[9] = sg[19] = sg[29] = sg[39] = sg[49] = sg[59] = M;
+  sg[4] = sg[10] = sg[11] = sg[14] = sg[20] = sg[21] = sg[24] = sg[34] = sg[35] = sg[55] = sg[56] = sg[57] = sg[58] = 0;
+  sg[38] = sg[40] = 0;
+  sg[53] = sg[54] = 0;
+  
+}
+
+int dec2BCD(int decimal) {
+    int bcd = 0;
+    int multiplier = 1;
+
+    while (decimal > 0) {
+        int digit = decimal % 10;
+        bcd += digit * multiplier;
+        multiplier *= 16; 
+        decimal /= 10;
+    }
+
+    return bcd;
+    
+    ///printf("BCD: %X\n", bcd);
+}
+
+
+void mark() {   // 0.2sec
+  ledcWrite(ledChannel, 127);
+  delay(200);
+  ledcWrite(ledChannel, 0);
+  delay(800);
+}
+
+void zero() {  // 0.8sec
+  ledcWrite(ledChannel, 127);
+  delay(800);
+  ledcWrite(ledChannel, 0);
+  delay(200);
+}
+
+void one() {    // 0.5sec
+  ledcWrite(ledChannel, 127);
+  delay(500);
+  ledcWrite(ledChannel, 0);
+  delay(500);
+}
