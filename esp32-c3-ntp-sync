@@ -96,11 +96,11 @@ while (millis() - blinkStart < 15000) {
   WiFiManager wm;
   WiFiManagerParameter tzParam("tz", "Enter timezone (e.g. +8 for Taiwan, default +9 for Japan)", "+9", 4);
   wm.addParameter(&tzParam);
-  wm.setConfigPortalTimeout(30);  // 最多等待 30 秒設定
+  wm.setConfigPortalTimeout(60);  // 最多等待 60 秒設定
   wm.startConfigPortal("JJY-Setup");  // 啟動設定介面（非阻塞）
   unsigned long configStart = millis();
 
-  while (!wm.getWiFiIsSaved() && (millis() - configStart < 20000)) {
+  while (!wm.getWiFiIsSaved() && (millis() - configStart < 30000)) {
     wm.process();       // 非阻塞處理 WiFiManager
     delay(100);
   }
