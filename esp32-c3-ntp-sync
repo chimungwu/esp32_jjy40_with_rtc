@@ -162,11 +162,13 @@ while (WiFi.status() != WL_CONNECTED && millis() - connectStart < 10000) {
 
     char timeStr[64];
 
+ delayUntilAlignedRTCWrite();  // 對齊整分鐘
+
   } else {
     Serial.println("\n❌ NTP 同步失敗");
     ntpSynced = false;
   }
- delayUntilAlignedRTCWrite();  // 對齊整分鐘
+
 }
 
 void delayUntilAlignedRTCWrite() {
