@@ -53,7 +53,7 @@ char P0, P1, P2, P3, P4, P5;
 const char M = P0 = P1 = P2 = P3 = P4 = P5 = -1;  // Marker signal (-1 or 255)
 char PA1, PA2;
 char SU1, LS1, LS2;
-char sg[60];
+char sg[62];
 
 // === Time Sync Status ===
 bool ntpSynced       = false;
@@ -166,6 +166,7 @@ while (WiFi.status() != WL_CONNECTED && millis() - connectStart < 10000) {
     Serial.println("\n❌ NTP 同步失敗");
     ntpSynced = false;
   }
+ delayUntilAlignedRTCWrite();  // 對齊整分鐘
 }
 
 void delayUntilAlignedRTCWrite() {
