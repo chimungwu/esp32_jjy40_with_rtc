@@ -1,38 +1,46 @@
- /*
-    JJY Transmitter (ver.0.11) - ESP32-C3 SuperMini / NodeMCU-32S Edition
-    ---------------------------------------------------------------------
-    Based on: ver.0.10 (2024/05/16 by Nash Shuji009)
-    Modified by: chimungwu (2025/05/08)
-  
-    Target Board: ESP32-C3 SuperMini（預設設定）
-    JJY Output: GPIO6 (PWM 40kHz)
-    Status LED: GPIO8（關閉：未發送，閃爍：發送中）
-  
-    ✅ 若使用 ESP32 NodeMCU-32S，請依下列方式修改腳位與狀態顯示：
-       - 將 PWM 輸出腳位改為 GPIO26： const int ledPin = 26;
-       - 將狀態 LED 腳位改為 GPIO2： #define STATUS_LED 2，或是依需求修改
-    ✅JJY 發波線圈：接至 GPIO6，並串聯一顆 220Ω 電阻後再接到線圈。
-    ✅狀態 LED：可使用板載 LED（GPIO2），或外接 LED（串聯 220Ω 後接 GND）。
-  
-    == 功能說明 ==
-    ✅ 每次開機都進入 WiFiManager「JJY-Setup」設定模式，讓使用者設定 Wi-Fi 與時區
-    ✅ 使用者可在設定頁輸入時區（格式如 +8 或 +9），支援自訂 NTP 時區校時
-    ✅ 成功連線 Wi-Fi 並設定後，會自動同步 NTP 並記錄精準秒基準（含微秒）後開始發送模擬 JJY 時碼
-    ✅ 發波以每秒為單位，每一秒皆以微秒對齊方式啟動，確保與日本 JJY 同步
-    ✅ 支援閏秒與錯誤值檢查，發送結束後序列埠會輸出傳送內容
-  
-    == 指示燈狀態 ==
-    - 快速閃爍：開機快速閃爍10秒
-    - 指示燈恆亮：等待WIFI設定，若無設定會等待30秒後連入之前AP
-    - 每秒閃爍1次：NTP 對時成功，已開始傳送 JJY 訊號
-  
-    == 相依函式庫 ==
+/*
+  JJY Transmitter (ver.0.11) - ESP32-C3 SuperMini / NodeMCU-32S Edition
+  ---------------------------------------------------------------------
+  Based on: ver.0.10 (2024/05/16 by Nash Shuji009)
+  Modified by: chimungwu (2025/05/17)
+
+  ▶ 適用開發板：
+    - ESP32-C3 SuperMini（預設腳位）
+    - 或 ESP32 NodeMCU-32S（需調整腳位）
+
+  ▶ 輸出設定：
+    - JJY 輸出：GPIO7（預設，PWM 40kHz）
+    - 狀態 LED：GPIO8（預設，HIGH = 發波中）
+
+  ▶ 使用說明：
+    ✅ 每次開機自動進入 WiFiManager「JJY-Setup」介面，設定 Wi-Fi 與時區
+    ✅ 可輸入時區（格式如 +8 或 +9）並設定自動重新對時間隔（1~24 小時）
+    ✅ 成功連線 Wi-Fi 後會透過 NTP 對時，並對齊整分鐘開始發送模擬 JJY 電波
+    ✅ 發波頻率為 40kHz（日本標準 JJY），每秒傳送一個時間碼位元
+    ✅ 支援閏秒補正與 sg[] 資料異常檢查，傳送內容會輸出至序列埠
+    ✅ 每秒 LED 閃爍提示發波進行中，WiFi 設定失敗時自動 fallback 為原設定
+
+  ▶ LED 狀態提示：
+    - 開機快速閃爍 15 秒
+    - 設定模式：常亮（等待 WiFiManager 設定）
+    - 發波中：每秒閃爍一次（NTP 同步成功）
+
+  ▶ 相依函式庫：
     - WiFiManager by tzapu: https://github.com/tzapu/WiFiManager
-    - Preferences（儲存時區）
-  
-    📌 時區預設值為 UTC+9（日本時間）
-    ➜ 若需改為台灣時間，設定頁請輸入 +8
-  */
+    - Preferences（儲存時區設定）
+
+  ▶ 硬體連接說明：
+    - 發波線圈接 GPIO7，並串接一顆 220Ω 電阻至 GND
+    - 狀態 LED 接 GPIO8（建議串聯 220Ω 到 GND），或使用板載 LED
+
+  ⚠️ 注意：ESP32-C3 若要使用 Serial Monitor（序列埠監控）觀察輸出
+    ➤ 請務必在 Arduino IDE 的 Tools 選單中啟用：
+        Tools → USB CDC on Boot → Enabled
+    ➤ 並選擇波特率 115200，才能正確看到 Serial.println() 的輸出
+
+  📌 預設時區為 UTC+9（日本時間）
+    ➤ 若需改為台灣時間，設定頁請輸入 +8
+*/
 
 #include <Arduino.h>
 #include <driver/ledc.h>
@@ -40,18 +48,18 @@
 #include <WiFiManager.h>
 #include <Preferences.h>
 #include <sys/time.h>
+
 uint64_t ntpSyncedMicros = 0;
 time_t ntpSyncedTime = 0;
 
 // === Hardware Settings ===
 const int ledChannel = 0;  // PWM channel for JJY signal output
-const int ledPin     = 6;  // PWM output pin (connected to JJY antenna via GPIO6)
+const int ledPin     = 7;  // PWM output pin (connected to JJY antenna via GPIO7)
 #define STATUS_LED    8    // Onboard status LED (GPIO8 on ESP32-C3 SuperMini)
 
 // === JJY Signal Variables ===
 char P0, P1, P2, P3, P4, P5;
 const char M = P0 = P1 = P2 = P3 = P4 = P5 = -1;  // Marker signal (-1 or 255)
-char PA1, PA2;
 char SU1, LS1, LS2;
 char sg[62];
 
@@ -65,16 +73,26 @@ Preferences prefs;
 String tzString = "+9";
 long timezoneOffsetSec = 9 * 3600L;
 
+// === NTP 自動重新對時設定 ===
+unsigned long lastSyncMillis = 0;         // 上次對時的時間（millis）
+int autoSyncHour = 6;                     // 預設自動對時間間隔（小時）
+unsigned long syncInterval = 6UL * 60UL * 60UL * 1000UL;  // 換算為毫秒
+
+
 void setup() {
-//設定發波頻率
+  Serial.begin(115200);   // 🔺提前啟動序列埠
+  Serial.println("🟢 Serial 啟動測試");
+  
+  pinMode(STATUS_LED, OUTPUT);
+  digitalWrite(STATUS_LED, LOW);
+  
   set_fix();
   ledcSetup(ledChannel, 40000, 8);
   ledcAttachPin(ledPin, ledChannel);
 
-  pinMode(STATUS_LED, OUTPUT);
-  digitalWrite(STATUS_LED, LOW);
-
 // 一開機先閃爍 15 秒
+
+
 unsigned long blinkStart = millis();
 while (millis() - blinkStart < 15000) {
   if (millis() - lastBlink >= 300) {
@@ -84,23 +102,22 @@ while (millis() - blinkStart < 15000) {
   }
   delay(10);
 }
-
 // 閃完後恆亮
   digitalWrite(STATUS_LED, HIGH);
-
-//序列埠啟動
-  Serial.begin(115200);
-  delay(2000);
+  delay(1000);
 
 //使用WiFiManager設定網路及時區
   WiFiManager wm;
-  WiFiManagerParameter tzParam("tz", "Enter timezone (e.g. +8 for Taiwan, default +9 for Japan)", "+9", 4);
+  WiFiManagerParameter tzParam("tz", "Enter timezone (e.g. +8 for Taiwan)", "+9", 4);
+  WiFiManagerParameter syncParam("sync", "Auto Sync Interval (hr)", "6", 3);
   wm.addParameter(&tzParam);
-  wm.setConfigPortalTimeout(60);  // 最多等待 60 秒設定
+  wm.addParameter(&syncParam);
+  
+  wm.setConfigPortalTimeout(30);  // 最多等待 30 秒設定
   wm.startConfigPortal("JJY-Setup");  // 啟動設定介面（非阻塞）
   unsigned long configStart = millis();
 
-  while (!wm.getWiFiIsSaved() && (millis() - configStart < 30000)) {
+  while (!wm.getWiFiIsSaved() && (millis() - configStart < 20000)) {
     wm.process();       // 非阻塞處理 WiFiManager
     delay(100);
   }
@@ -125,14 +142,26 @@ while (WiFi.status() != WL_CONNECTED && millis() - connectStart < 10000) {
 
   Serial.println("\n📶 WiFi 連線成功");
 
-  tzString = String(tzParam.getValue());
-  prefs.begin("jjy", false);
-  prefs.putString("tz", tzString);
-  prefs.end();
+  // 擷取時區與自動同步間隔設定
+tzString = String(tzParam.getValue());
+prefs.begin("jjy", false);
+prefs.putString("tz", tzString);
+prefs.end();
 
-  int tz_hour = tzString.toInt();
-  timezoneOffsetSec = tz_hour * 3600L;
-  Serial.printf("🌐 Timezone 設定為 UTC%+d\n", tz_hour);
+int tz_hour = tzString.toInt();
+timezoneOffsetSec = tz_hour * 3600L;
+Serial.printf("🌐 Timezone 設定為 UTC%+d\n", tz_hour);
+
+// ✅ 解析 sync 時間
+const char* syncInput = syncParam.getValue();
+if (syncInput && strlen(syncInput) > 0) {
+  int hr = atoi(syncInput);
+  if (hr >= 1 && hr <= 24) {  // 合理範圍檢查
+    autoSyncHour = hr;
+    syncInterval = (unsigned long)hr * 60UL * 60UL * 1000UL;
+    Serial.printf("🔁 自動校時間隔：每 %d 小時\n", autoSyncHour);
+  }
+}
 
   configTime(timezoneOffsetSec, 0,
              "time.stdtime.gov.tw", "time.google.com", "ntp.twnic.tw");
@@ -153,22 +182,20 @@ while (WiFi.status() != WL_CONNECTED && millis() - connectStart < 10000) {
 
   if (getLocalTime(&timeInfo)) {
     ntpSynced = true;
-
-    // 紀錄精準對時時間點（秒 + 微秒）
+    // 新增：紀錄精準對時時間點（秒 + 微秒）
     time(&ntpSyncedTime);
     ntpSyncedMicros = esp_timer_get_time();
 
     Serial.println("\n✅ NTP 同步成功");
 
     char timeStr[64];
-
- delayUntilAlignedRTCWrite();  // 對齊整分鐘
-
+    lastSyncMillis = millis();  // 記錄對時成功時間
   } else {
     Serial.println("\n❌ NTP 同步失敗");
     ntpSynced = false;
   }
-
+    delayUntilAlignedRTCWrite();  // 對齊整分鐘
+    Serial.println("✅ 初始化完成，開始發射計時波訊號");
 }
 
 void delayUntilAlignedRTCWrite() {
@@ -213,6 +240,12 @@ void loop() {
   localtime_r(&currentTime, &timeInfo);
 
   printAndSendJJY(timeInfo);
+
+  // ✅ 自動重新對時邏輯
+  if (millis() - lastSyncMillis > syncInterval) {
+    Serial.printf("⏳ 自動重新對時觸發（間隔 %lu ms）\n", syncInterval);
+    resyncNTP();  // 呼叫重新對時函式
+  }
 }
 
 
@@ -233,42 +266,58 @@ void set_year(int n){
 }
 
 void printAndSendJJY(struct tm &timeInfo) {
-
-  char s[40];
-  char t[64];
-  int se, mi, sh;
-
-  // 閏秒補正
+  int se, sh;
   se = timeInfo.tm_sec;
   sh = 0;
+
+  // ✅ 處理閏秒補正
   if (timeInfo.tm_sec == 60) {
     sg[53] = LS1 = 1;
     sg[54] = LS2 = 0;
-    se = timeInfo.tm_sec - 1;
+    se = 59;
     sh = 1;
-  }
-  if (timeInfo.tm_sec == 61) {
+  } else if (timeInfo.tm_sec == 61) {
     sg[53] = LS1 = 1;
     sg[54] = LS2 = 1;
-    se = timeInfo.tm_sec - 2;
+    se = 58;
     sh = 2;
   }
 
+  // ✅ 設定時間碼
   set_min(timeInfo.tm_min);
   set_hour(timeInfo.tm_hour);
   set_day(timeInfo.tm_yday + 1);
   set_wday(timeInfo.tm_wday);
   set_year(timeInfo.tm_year + 1900 - 2000);
 
-  for (int i = se; i < 60 + sh; i++) {
+  // ✅ 顯示目前時間戳
+  char buf[64];
+  snprintf(buf, sizeof(buf), "⏰ %04d/%02d/%02d %02d:%02d:%02d",
+           timeInfo.tm_year + 1900, timeInfo.tm_mon + 1, timeInfo.tm_mday,
+           timeInfo.tm_hour, timeInfo.tm_min, timeInfo.tm_sec);
+  Serial.println(buf);
 
-    // 狀態燈閃爍（每秒）
-    if (millis() - lastBlink >= 1000) {
-      ledState = !ledState;
-      digitalWrite(STATUS_LED, ledState ? HIGH : LOW);
-      lastBlink = millis();
+  // ✅ 顯示預備發送資訊
+  Serial.printf("📡 開始發送時間碼：從 %02d 秒起，預計長度 %d 秒\n", se, 60 + sh - se);
+
+  // ✅ 顯示 sg[] 資料內容
+  char t[64];
+  for (int i = se; i < 60 + sh && i < 62; ++i) {
+    // ✅ 錯誤值保護
+    if (sg[i] != -1 && sg[i] != 0 && sg[i] != 1 && sg[i] != 255) {
+      Serial.printf("⚠️ sg[%d] 值異常：%d，自動修正為 0\n", i, sg[i]);
+      sg[i] = 0;
     }
 
+    // ✅ 輸出 sg 值
+    snprintf(t, sizeof(t), "%02d ", sg[i]);
+    Serial.print(t);
+
+    if ((i - se + 1) % 10 == 0) {
+      Serial.println();  // 每 10 筆換行
+    }
+
+    // ✅ 實際發波
     switch (sg[i]) {
       case -1:
       case 255:
@@ -281,12 +330,20 @@ void printAndSendJJY(struct tm &timeInfo) {
         one();
         break;
       default:
-        zero();
-        sprintf(t, "%02d  %02d", i, sg[i]);
+        zero();  // fallback
         break;
     }
+
+    // 閃爍 LED 每秒提示
+    if (millis() - lastBlink >= 1000) {
+      ledState = !ledState;
+      digitalWrite(STATUS_LED, ledState ? HIGH : LOW);
+      lastBlink = millis();
+    }
   }
+  Serial.println();  // 結尾換行
 }
+
 
 void set_day(int n){
   
@@ -392,4 +449,36 @@ void one() {    // 0.5sec
   delay(500);
   ledcWrite(ledChannel, 0);
   delay(500);
+}
+
+void resyncNTP() {
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("⚠️ 無法重新對時：WiFi 尚未連線");
+    ntpSyncedMicros = 0;
+    ntpSynced = false;
+    return;
+  }
+
+  Serial.println("🔄 嘗試透過 NTP 重新對時...");
+  configTime(timezoneOffsetSec, 0, "time.stdtime.gov.tw", "time.google.com", "ntp.twnic.tw");
+
+  struct tm timeInfo;
+  if (getLocalTime(&timeInfo)) {
+    ntpSynced = true;
+    time(&ntpSyncedTime);
+    ntpSyncedMicros = esp_timer_get_time();
+    lastSyncMillis = millis();  // 更新對時基準時間
+
+    Serial.printf("✅ 重新校時成功：%04d/%02d/%02d %02d:%02d:%02d\n",
+                  timeInfo.tm_year + 1900,
+                  timeInfo.tm_mon + 1,
+                  timeInfo.tm_mday,
+                  timeInfo.tm_hour,
+                  timeInfo.tm_min,
+                  timeInfo.tm_sec);
+  } else {
+    Serial.println("❌ 重新校時失敗，維持現有模式");
+    ntpSynced = false;
+    ntpSyncedMicros = 0;
+  }
 }
