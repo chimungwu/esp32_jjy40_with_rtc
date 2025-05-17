@@ -1,5 +1,5 @@
 /*
-  JJY Transmitter (ver.0.11) - ESP32-C3 SuperMini / NodeMCU-32S Edition
+  JJY Transmitter - ESP32-C3 SuperMini / NodeMCU-32S Edition
   ---------------------------------------------------------------------
   Based on: ver.0.10 (2024/05/16 by Nash Shuji009)
   Modified by: chimungwu (2025/05/17)
@@ -27,8 +27,7 @@
 
   ▶ 相依函式庫：
     - WiFiManager by tzapu: https://github.com/tzapu/WiFiManager
-    - Preferences（儲存時區設定）
-
+    
   ▶ 硬體連接說明：
     - 發波線圈接 GPIO7，並串接一顆 220Ω 電阻至 GND
     - 狀態 LED 接 GPIO8（建議串聯 220Ω 到 GND），或使用板載 LED
@@ -81,8 +80,8 @@ unsigned long syncInterval = 6UL * 60UL * 60UL * 1000UL;  // 換算為毫秒
 
 void setup() {
   Serial.begin(115200);   // 🔺提前啟動序列埠
-  Serial.println("🟢 Serial 啟動測試");
-  
+  Serial.println("🔧 啟動 WiFi 設定介面中...");
+    
   pinMode(STATUS_LED, OUTPUT);
   digitalWrite(STATUS_LED, LOW);
   
@@ -91,7 +90,6 @@ void setup() {
   ledcAttachPin(ledPin, ledChannel);
 
 // 一開機先閃爍 15 秒
-
 
 unsigned long blinkStart = millis();
 while (millis() - blinkStart < 15000) {
@@ -121,10 +119,7 @@ while (millis() - blinkStart < 15000) {
     wm.process();       // 非阻塞處理 WiFiManager
     delay(100);
   }
-  
-  Serial.println("🔧 啟動 WiFi 設定介面中...");
-  // 時間到或設定完成，關閉設定頁並嘗試連線記憶的 WiFi
-  
+    
     WiFi.mode(WIFI_STA);
     WiFi.begin();
 
@@ -195,7 +190,6 @@ if (syncInput && strlen(syncInput) > 0) {
     ntpSynced = false;
   }
     delayUntilAlignedRTCWrite();  // 對齊整分鐘
-    Serial.println("✅ 初始化完成，開始發射計時波訊號");
 }
 
 void delayUntilAlignedRTCWrite() {
@@ -207,8 +201,8 @@ void delayUntilAlignedRTCWrite() {
 
   int64_t delay_us = micros_next_minute - micros_now;
 
-  Serial.printf("⏱ 對齊延遲 %.3f 秒...\n", delay_us / 1000000.0);
-
+  Serial.printf("⏱ 對齊延遲 %.3f 秒...", delay_us / 1000000.0);
+  Serial.println("\n✅ 初始化完成，準備發射計時波訊號");
   if (delay_us >= 1000) {
     delay(delay_us / 1000);                  // 毫秒以上部分
     delayMicroseconds(delay_us % 1000);      // 剩下微秒
@@ -247,7 +241,6 @@ void loop() {
     resyncNTP();  // 呼叫重新對時函式
   }
 }
-
 
 
 void set_year(int n){
